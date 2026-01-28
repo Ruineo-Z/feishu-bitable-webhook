@@ -1,1 +1,0 @@
-- 禁止使用 `Fetch`工具，使用Minimax的MCP来替代
