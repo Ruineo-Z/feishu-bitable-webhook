@@ -31,6 +31,55 @@ export class ActionRegistry {
   }
 }
 
+function convertFeishuFieldValue(value: unknown): unknown {
+  if (Array.isArray(value) && value.length > 0) {
+    const firstItem = value[0]
+    if (typeof firstItem === 'object' && firstItem !== null) {
+      const item = firstItem as Record<string, unknown>
+      if (item.type === 'text' && typeof item.text === 'string') {
+        return item.text
+      }
+      if (item.users && Array.isArray(item.users)) {
+        return item.users.map((u: Record<string, unknown>) => ({ id: u.userId as string }))
+      }
+    }
+    return value
+  }
+  if (typeof value === 'object' && value !== null) {
+    const obj = value as Record<string, unknown>
+    if (obj.users && Array.isArray(obj.users)) {
+      return obj.users.map((u: Record<string, unknown>) => ({ id: u.userId as string }))
+    }
+  }
+  return value
+}
+
+function resolveFieldValue(value: unknown, context: Record<string, unknown>): unknown {
+  if (typeof value === 'object' && value !== null && 'field' in (value as Record<string, unknown>)) {
+    const fieldName = (value as { field: string }).field
+    const fields = context.record as Record<string, unknown>
+    const rawValue = fields?.[fieldName]
+    return convertFeishuFieldValue(rawValue)
+  }
+  return value
+}
+
+function resolveFields(params: ActionParams, context: Record<string, unknown>): ActionParams {
+  const resolved: ActionParams = {}
+  for (const [key, value] of Object.entries(params)) {
+    if (key === 'fields' && typeof value === 'object' && value !== null) {
+      const fields: Record<string, unknown> = {}
+      for (const [fieldKey, fieldValue] of Object.entries(value as Record<string, unknown>)) {
+        fields[fieldKey] = resolveFieldValue(fieldValue, context)
+      }
+      resolved[key] = fields
+    } else {
+      resolved[key] = value
+    }
+  }
+  return resolved
+}
+
 export async function executeAction(
   action: ActionConfig,
   context: Record<string, unknown>
@@ -47,7 +96,8 @@ export async function executeAction(
   }
 
   try {
-    const response = await handler.execute(action.params, context)
+    const resolvedParams = resolveFields(action.params, context)
+    const response = await handler.execute(resolvedParams, context)
     return response
   } catch (error) {
     return {

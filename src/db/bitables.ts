@@ -5,6 +5,7 @@ export interface BitableConfig {
   app_token: string
   name: string
   table_ids: string[]
+  field_mappings?: Record<string, string>
   created_at?: string
   updated_at?: string
 }
@@ -80,7 +81,7 @@ export const bitablesDb = {
     if (error) throw error
   },
 
-  async findByTable(appToken: string, tableId: string): Promise<BitableConfig[]> {
+  async findByTable(appToken: string, tableId: string): Promise<BitableConfig | null> {
     const { data, error } = await getSupabase()
       .from('bitables')
       .select('*')
@@ -88,9 +89,11 @@ export const bitablesDb = {
 
     if (error) throw error
 
-    return (data || []).filter(bitable => {
+    const matching = (data || []).filter(bitable => {
       const tableIds = bitable.table_ids
       return tableIds.length === 0 || tableIds.includes(tableId)
     })
+
+    return matching[0] || null
   }
 }

@@ -29,7 +29,7 @@ export const executionLogsDb = {
   async create(log: Omit<ExecutionLog, 'id' | 'created_at'>): Promise<ExecutionLog> {
     const { data, error } = await getSupabase()
       .from('execution_logs')
-      .insert(log)
+      .insert(log as ExecutionLog)
       .select()
       .single()
 
@@ -76,7 +76,7 @@ export const executionLogsDb = {
       query = query.limit(filter.limit)
     }
     if (filter.offset) {
-      query = query.offset(filter.offset)
+      query = query.range(filter.offset, filter.offset + (filter.limit || 50) - 1)
     }
 
     const { data, error } = await query
@@ -126,7 +126,7 @@ export const executionLogsDb = {
       .from('execution_logs')
       .delete()
       .lt('created_at', olderThan)
-      .select('*', { count: 'exact', head: true })
+      .select('*', { count: 'exact' })
 
     if (error) throw error
     return count || 0

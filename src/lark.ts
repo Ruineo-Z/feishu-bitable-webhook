@@ -33,15 +33,51 @@ function parseFieldValue(fieldValue: string): unknown {
   }
 }
 
-function extractFieldsFromAction(actionData: any): Record<string, unknown> {
-  const fields: Record<string, unknown> = {}
-  if (!actionData?.after_value) return fields
+function extractFieldsFromAction(
+  actionData: any,
+  fieldMappings: Record<string, string> = {}
+): { after: Record<string, unknown>; before: Record<string, unknown> } {
+  const after: Record<string, unknown> = {}
+  const before: Record<string, unknown> = {}
 
-  for (const item of actionData.after_value) {
-    const value = parseFieldValue(item.field_value)
-    fields[item.field_id] = value
+  function parseFieldWithIdentity(item: any): unknown {
+    // 人员字段有 field_identity_value 时使用 open_id
+    if (item.field_identity_value?.users?.length > 0) {
+      const users = item.field_identity_value.users.map((u: any) => ({
+        id: u.user_id?.open_id
+      }))
+      return users
+    }
+    // 人员字段被清空时返回 null
+    if (item.field_value === '' || !item.field_value) {
+      return null
+    }
+    return parseFieldValue(item.field_value)
   }
-  return fields
+
+  if (actionData?.after_value) {
+    for (const item of actionData.after_value) {
+      const value = parseFieldWithIdentity(item)
+      after[item.field_id] = value
+      const mappedName = fieldMappings[item.field_id]
+      if (mappedName) {
+        after[mappedName] = value
+      }
+    }
+  }
+
+  if (actionData?.before_value) {
+    for (const item of actionData.before_value) {
+      const value = parseFieldWithIdentity(item)
+      before[item.field_id] = value
+      const mappedName = fieldMappings[item.field_id]
+      if (mappedName) {
+        before[mappedName] = value
+      }
+    }
+  }
+
+  return { after, before }
 }
 
 async function logExecution(log: Omit<ExecutionLog, 'id' | 'created_at'>): Promise<void> {
@@ -62,6 +98,8 @@ async function validateConnections(): Promise<void> {
 }
 
 async function processEvent(data: any, version: string) {
+  console.log('[飞书] 收到事件完整内容:', JSON.stringify(data, null, 2))
+
   const eventData: EventData = {
     file_token: data.file_token,
     table_id: data.table_id,
@@ -76,32 +114,37 @@ async function processEvent(data: any, version: string) {
     operatorId: data.operator_id?.open_id,
   })
 
-  // 打印变更前后数据
+  // 打印触发信息
   const actionData = data.action_list?.[0]
   if (actionData) {
-    console.log('[飞书] === 变更数据 ===')
-    console.log('操作:', actionData.action)
-    console.log('记录ID:', actionData.record_id)
-    console.log('变更前:', JSON.stringify(actionData.before_value, null, 2))
-    console.log('变更后:', JSON.stringify(actionData.after_value, null, 2))
+    console.log('[飞书] 触发: 记录=' + actionData.record_id + ', 操作=' + actionData.action)
   }
 
   try {
     const recordId = actionData?.record_id
 
-    const fields = extractFieldsFromAction(actionData)
-    console.log('[飞书] 字段数据:', JSON.stringify(fields, null, 2))
+    // 获取字段映射
+    let fieldMappings: Record<string, string> = {}
+    try {
+      const bitable = await bitablesDb.findByAppToken(data.file_token)
+      if (bitable?.field_mappings) {
+        fieldMappings = bitable.field_mappings as Record<string, string>
+      }
+    } catch (e) {
+      console.log('[飞书] 获取字段映射失败，使用默认映射')
+    }
 
-    eventData.record = { fields } as Record<string, unknown>
+    const { after: fields, before: beforeFields } = extractFieldsFromAction(actionData, fieldMappings)
+    ;(eventData as any).record = { fields, beforeFields }
 
     const matchedRules = await ruleMatcher.match(eventData)
 
     if (matchedRules.length === 0) {
-      console.log('[飞书] 没有匹配的规则')
+      console.log('[飞书] 无匹配规则')
       return
     }
 
-    console.log(`[飞书] 匹配到 ${matchedRules.length} 条规则`)
+    console.log('[飞书] 匹配规则: ' + matchedRules.map(r => r.rule.name).join(', '))
 
     for (const { rule, recordId } of matchedRules) {
       const context = {
@@ -113,18 +156,7 @@ async function processEvent(data: any, version: string) {
 
       const actionResult = await executeAction(rule.action, context)
 
-      console.log(`[飞书] 执行规则: ${rule.name}`)
-      console.log(`[飞书]   - 动作类型: ${rule.action.type}`)
-      console.log(`[飞书]   - 执行结果: ${actionResult.success ? '成功' : '失败'}`)
-      if (actionResult.durationMs) {
-        console.log(`[飞书]   - 耗时: ${actionResult.durationMs}ms`)
-      }
-      if (!actionResult.success) {
-        console.log(`[飞书]   - 错误: ${actionResult.error}`)
-      }
-      if (actionResult.response) {
-        console.log(`[飞书]   - 响应:`, JSON.stringify(actionResult.response).slice(0, 200))
-      }
+      console.log('[飞书] 规则 ' + rule.name + ': ' + (actionResult.success ? '成功' : '失败'))
 
       await logExecution({
         rule_id: rule.id!,

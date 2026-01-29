@@ -30,6 +30,7 @@ export interface ActionParams {
   table_id?: string
   record_id?: string
   fields?: Record<string, unknown>
+  [key: string]: unknown
 }
 
 export interface ActionConfig {
@@ -120,5 +121,17 @@ export const rulesDb = {
 
   async toggleEnabled(id: string, enabled: boolean): Promise<RuleConfig> {
     return this.update(id, { enabled })
+  },
+
+  async findByBitable(bitableId: string): Promise<RuleConfig[]> {
+    const { data, error } = await getSupabase()
+      .from('rules')
+      .select('*')
+      .eq('bitable_id', bitableId)
+      .eq('enabled', true)
+      .order('created_at', { ascending: true })
+
+    if (error) throw error
+    return data || []
   }
 }

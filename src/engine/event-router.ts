@@ -12,7 +12,10 @@ export interface EventData {
   operator_id?: {
     open_id: string
   }
-  record?: Record<string, unknown>
+  record?: {
+    fields: Record<string, unknown>
+    beforeFields?: Record<string, unknown>
+  }
 }
 
 export interface MatchedRule {
@@ -30,40 +33,38 @@ export class EventRouter {
     const recordId = event.action_list?.[0]?.record_id
 
     if (!appToken || !tableId || !action || !recordId) {
-      console.warn('[EventRouter] Invalid event data:', { appToken, tableId, action, recordId })
       return []
     }
 
-    const bitableConfigs = await this.getBitableConfigs(appToken, tableId)
-    if (bitableConfigs.length === 0) {
-      console.log('[EventRouter] No bitable config found for:', { appToken, tableId })
+    const bitableConfig = await this.getBitableConfig(appToken, tableId)
+    if (!bitableConfig) {
       return []
     }
 
-    const enabledRules = await rulesDb.findEnabledByAppToken(appToken)
+    const rules = await rulesDb.findByBitable(bitableConfig.id)
+    const matchedRules: Array<{ rule: RuleConfig; recordId: string }> = []
 
-    const matchedRules: MatchedRule[] = []
-
-    for (const rule of enabledRules) {
-      const match = this.matchRule(rule, event, tableId, action, recordId)
-      if (match) {
-        matchedRules.push(match)
+    for (const rule of rules) {
+      const result = this.matchRule(rule, event, tableId, action, recordId)
+      if (result) {
+        matchedRules.push(result)
       }
     }
 
-    console.log('[EventRouter] Matched rules:', matchedRules.length)
     return matchedRules
   }
 
-  private async getBitableConfigs(appToken: string, tableId: string): Promise<BitableConfig[]> {
+  private async getBitableConfig(appToken: string, tableId: string): Promise<BitableConfig | null> {
     const cacheKey = `${appToken}:${tableId}`
     if (this.bitableCache.has(cacheKey)) {
       return this.bitableCache.get(cacheKey)!
     }
 
-    const configs = await bitablesDb.findByTable(appToken, tableId)
-    this.bitableCache.set(cacheKey, configs)
-    return configs
+    const config = await bitablesDb.findByTable(appToken, tableId)
+    if (config) {
+      this.bitableCache.set(cacheKey, config)
+    }
+    return config
   }
 
   private matchRule(
@@ -85,23 +86,12 @@ export class EventRouter {
       fields: event.record?.fields as Record<string, unknown> || {},
       recordId,
       action,
-      operatorOpenId: event.operator_id?.open_id
+      operatorOpenId: event.operator_id?.open_id,
+      beforeFields: event.record?.beforeFields
     }
 
     if (rule.trigger.condition) {
-      const context: EvaluationContext = {
-        fields: event.record?.fields as Record<string, unknown> || {},
-        recordId,
-        action,
-        operatorOpenId: event.operator_id?.open_id
-      }
-
-      console.log('[EventRouter] 评估条件:', JSON.stringify(rule.trigger.condition))
-      console.log('[EventRouter] 记录字段:', JSON.stringify(context.fields))
-
       const conditionResult = ConditionEvaluator.evaluate(rule.trigger.condition, context)
-      console.log('[EventRouter] 条件评估结果:', conditionResult)
-
       if (!conditionResult) {
         return null
       }

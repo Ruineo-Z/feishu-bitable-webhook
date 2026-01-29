@@ -5,10 +5,11 @@ export interface EvaluationContext {
   recordId: string
   action: string
   operatorOpenId?: string
+  beforeFields?: Record<string, unknown>
 }
 
 export class ConditionEvaluator {
-  private static operators: Record<string, (a: unknown, b?: unknown) => boolean> = {
+  private static operators: Record<string, (a: unknown, b?: unknown, c?: unknown) => boolean> = {
     equals: (a, b) => String(a) === String(b),
     not_equals: (a, b) => String(a) !== String(b),
     contains: (a, b) => String(a).toLowerCase().includes(String(b).toLowerCase()),
@@ -19,6 +20,11 @@ export class ConditionEvaluator {
     '<=': (a, b) => Number(a) <= Number(b),
     exists: (a) => a !== null && a !== undefined && a !== '',
     not_exists: (a) => a === null || a === undefined || a === '',
+    changed: (a, b, beforeFields) => {
+      if (!beforeFields || typeof beforeFields !== 'object') return true
+      const beforeValue = (beforeFields as Record<string, unknown>)[b as string]
+      return JSON.stringify(a) !== JSON.stringify(beforeValue)
+    },
   }
 
   static evaluate(condition: Condition | undefined, context: EvaluationContext): boolean {
@@ -46,6 +52,11 @@ export class ConditionEvaluator {
     // exists / not_exists 不需要比较值
     if (expr.operator === 'exists' || expr.operator === 'not_exists') {
       return operatorFn(fieldValue)
+    }
+
+    // changed 需要 beforeFields
+    if (expr.operator === 'changed') {
+      return operatorFn(fieldValue, expr.field, context.beforeFields)
     }
 
     const conditionValue = expr.value
