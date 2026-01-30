@@ -38,13 +38,19 @@ export interface ActionConfig {
   params: ActionParams
 }
 
+export interface RuleActionConfig {
+  name: string           // 动作名称
+  condition?: Condition  // 动作执行条件
+  action: ActionConfig
+}
+
 export interface RuleConfig {
   id?: string
   name: string
   enabled: boolean
   bitable_id: string
   trigger: TriggerConfig
-  action: ActionConfig
+  actions: RuleActionConfig[]  // 支持多动作
   on_failure: 'continue' | 'stop'
   created_at?: string
   updated_at?: string

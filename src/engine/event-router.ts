@@ -1,4 +1,4 @@
-import { RuleConfig, rulesDb } from '../db/rules'
+import { RuleConfig, rulesDb, RuleActionConfig } from '../db/rules'
 import { bitablesDb, BitableConfig } from '../db/bitables'
 import { ConditionEvaluator, EvaluationContext } from './condition-evaluator'
 
@@ -21,6 +21,7 @@ export interface EventData {
 export interface MatchedRule {
   rule: RuleConfig
   recordId: string
+  matchedActions: RuleActionConfig[]  // 满足条件的动作列表
 }
 
 export class EventRouter {
@@ -42,7 +43,7 @@ export class EventRouter {
     }
 
     const rules = await rulesDb.findByBitable(bitableConfig.id)
-    const matchedRules: Array<{ rule: RuleConfig; recordId: string }> = []
+    const matchedRules: MatchedRule[] = []
 
     for (const rule of rules) {
       const result = this.matchRule(rule, event, tableId, action, recordId)
@@ -90,6 +91,7 @@ export class EventRouter {
       beforeFields: event.record?.beforeFields
     }
 
+    // 评估全局触发条件
     if (rule.trigger.condition) {
       const conditionResult = ConditionEvaluator.evaluate(rule.trigger.condition, context)
       if (!conditionResult) {
@@ -97,9 +99,29 @@ export class EventRouter {
       }
     }
 
+    // 筛选满足条件的动作
+    const matchedActions: RuleActionConfig[] = []
+    for (const ruleAction of rule.actions) {
+      // 如果动作没有条件，直接匹配
+      if (!ruleAction.condition) {
+        matchedActions.push(ruleAction)
+        continue
+      }
+      // 评估动作条件
+      const actionConditionResult = ConditionEvaluator.evaluate(ruleAction.condition, context)
+      if (actionConditionResult) {
+        matchedActions.push(ruleAction)
+      }
+    }
+
+    if (matchedActions.length === 0) {
+      return null
+    }
+
     return {
       rule,
-      recordId
+      recordId,
+      matchedActions
     }
   }
 

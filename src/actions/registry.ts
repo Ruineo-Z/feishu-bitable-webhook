@@ -56,9 +56,18 @@ function convertFeishuFieldValue(value: unknown): unknown {
 
 function resolveFieldValue(value: unknown, context: Record<string, unknown>): unknown {
   if (typeof value === 'object' && value !== null && 'field' in (value as Record<string, unknown>)) {
-    const fieldName = (value as { field: string }).field
-    const fields = context.record as Record<string, unknown>
-    const rawValue = fields?.[fieldName]
+    const fieldRef = value as { field: string }
+    const fieldName = fieldRef.field
+
+    // 支持 before: 前缀引用变更前的值
+    const isBeforeField = fieldName.startsWith('before:')
+    const actualFieldName = isBeforeField ? fieldName.slice(7) : fieldName
+
+    const record = isBeforeField
+      ? (context.beforeRecord as Record<string, unknown>)
+      : (context.record as Record<string, unknown>)
+
+    const rawValue = record?.[actualFieldName]
     return convertFeishuFieldValue(rawValue)
   }
   return value

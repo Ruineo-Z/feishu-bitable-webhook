@@ -104,22 +104,53 @@ async function setupAutomation() {
           condition: {
             logic: 'AND',
             expressions: [
-              { field: '设备码', operator: 'exists' },
-              { field: '人员', operator: 'changed' }
+              { field: '设备码', operator: 'exists' }
             ]
           }
         },
-        action: {
-          type: 'create_record',
-          params: {
-            app_token: 'K2z2bZknLal2u3sH8tOcUs7snih',
-            table_id: 'tbl4IkCXeMmJTl6J',
-            fields: {
-              '设备码': '{{fields.设备码}}',
-              '人员': '{{fields.人员}}'
+        actions: [
+          {
+            name: '创建变更记录',
+            condition: {
+              logic: 'AND',
+              expressions: [
+                { field: '人员', operator: 'exists' },
+                { field: '人员', operator: 'changed' }
+              ]
+            },
+            action: {
+              type: 'create_record',
+              params: {
+                app_token: 'K2z2bZknLal2u3sH8tOcUs7snih',
+                table_id: 'tbl4IkCXeMmJTl6J',
+                fields: {
+                  '设备码': { field: '设备码' },
+                  '人员': { field: '人员' }
+                }
+              }
+            }
+          },
+          {
+            name: '删除旧记录',
+            condition: {
+              logic: 'AND',
+              expressions: [
+                { field: '人员', operator: 'changed' }
+              ]
+            },
+            action: {
+              type: 'delete_record',
+              params: {
+                app_token: 'K2z2bZknLal2u3sH8tOcUs7snih',
+                table_id: 'tbl4IkCXeMmJTl6J',
+                filter_fields: {
+                  '设备码': { field: '设备码' },
+                  '人员': { field: 'before:人员' }
+                }
+              }
             }
           }
-        },
+        ],
         on_failure: 'continue'
       })
       .eq('id', existingRules[0].id)
@@ -138,22 +169,53 @@ async function setupAutomation() {
           condition: {
             logic: 'AND',
             expressions: [
-              { field: '设备码', operator: 'exists' },
-              { field: '人员', operator: 'changed' }
+              { field: '设备码', operator: 'exists' }
             ]
           }
         },
-        action: {
-          type: 'create_record',
-          params: {
-            app_token: 'K2z2bZknLal2u3sH8tOcUs7snih',
-            table_id: 'tbl4IkCXeMmJTl6J',
-            fields: {
-              '设备码': '{{fields.设备码}}',
-              '人员': '{{fields.人员}}'
+        actions: [
+          {
+            name: '创建变更记录',
+            condition: {
+              logic: 'AND',
+              expressions: [
+                { field: '人员', operator: 'exists' },
+                { field: '人员', operator: 'changed' }
+              ]
+            },
+            action: {
+              type: 'create_record',
+              params: {
+                app_token: 'K2z2bZknLal2u3sH8tOcUs7snih',
+                table_id: 'tbl4IkCXeMmJTl6J',
+                fields: {
+                  '设备码': { field: '设备码' },
+                  '人员': { field: '人员' }
+                }
+              }
+            }
+          },
+          {
+            name: '删除旧记录',
+            condition: {
+              logic: 'AND',
+              expressions: [
+                { field: '人员', operator: 'changed' }
+              ]
+            },
+            action: {
+              type: 'delete_record',
+              params: {
+                app_token: 'K2z2bZknLal2u3sH8tOcUs7snih',
+                table_id: 'tbl4IkCXeMmJTl6J',
+                filter_fields: {
+                  '设备码': { field: '设备码' },
+                  '人员': { field: 'before:人员' }
+                }
+              }
             }
           }
-        },
+        ],
         on_failure: 'continue'
       })
 

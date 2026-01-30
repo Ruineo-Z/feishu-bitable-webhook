@@ -159,37 +159,43 @@ async function processEvent(data: any, version: string) {
 
     logger.info('[飞书] 匹配规则: ' + matchedRules.map(r => r.rule.name).join(', '))
 
-    for (const { rule, recordId } of matchedRules) {
+    for (const { rule, recordId, matchedActions } of matchedRules) {
       const context = {
         recordId,
         record: fields,
+        beforeRecord: beforeFields,
         operatorOpenId: eventData.operator_id?.open_id,
         action: actionData?.action,
       }
 
-      const actionResult = await executeAction(rule.action, context)
+      // 执行所有满足条件的动作
+      for (const ruleAction of matchedActions) {
+        logger.info(`[飞书] 执行动作: ${rule.name} - ${ruleAction.name}`)
 
-      if (actionResult.success) {
-        logger.success(`[飞书] 规则 "${rule.name}" 执行成功`)
-      } else {
-        logger.error(`[飞书] 规则 "${rule.name}" 执行失败:`, actionResult.error)
-      }
+        const actionResult = await executeAction(ruleAction.action, context)
 
-      await logExecution({
-        rule_id: rule.id!,
-        rule_name: rule.name,
-        trigger_action: actionData?.action || 'unknown',
-        record_id: recordId,
-        operator_openid: eventData.operator_id?.open_id,
-        record_snapshot: { fields },
-        status: actionResult.success ? 'success' : 'failed',
-        error_message: actionResult.error,
-        duration_ms: actionResult.durationMs,
-        response: actionResult.response,
-      })
+        if (actionResult.success) {
+          logger.success(`[飞书]   动作 "${ruleAction.name}" 执行成功`)
+        } else {
+          logger.error(`[飞书]   动作 "${ruleAction.name}" 执行失败:`, actionResult.error)
+        }
 
-      if (!actionResult.success && rule.on_failure === 'stop') {
-        break
+        await logExecution({
+          rule_id: rule.id!,
+          rule_name: `${rule.name} - ${ruleAction.name}`,
+          trigger_action: actionData?.action || 'unknown',
+          record_id: recordId,
+          operator_openid: eventData.operator_id?.open_id,
+          record_snapshot: { fields },
+          status: actionResult.success ? 'success' : 'failed',
+          error_message: actionResult.error,
+          duration_ms: actionResult.durationMs,
+          response: actionResult.response,
+        })
+
+        if (!actionResult.success && rule.on_failure === 'stop') {
+          break
+        }
       }
     }
 
