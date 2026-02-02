@@ -1,20 +1,44 @@
 import { getSupabase } from './client'
 
-export interface ExecutionLog {
-  id?: string
-  rule_id: string
-  rule_name?: string
-  trigger_action: string
-  record_id: string
-  operator_openid?: string
-  record_snapshot?: Record<string, unknown>
-  status: 'success' | 'failed' | 'partial'
-  error_message?: string
-  duration_ms?: number
+/**
+ * 动作执行记录
+ */
+export interface ActionExecution {
+  name: string
+  type: string
+  params: Record<string, unknown>
+  status: 'success' | 'failed'
+  error?: string
+  durationMs: number
   response?: Record<string, unknown>
-  created_at?: string
 }
 
+/**
+ * 执行日志
+ */
+export interface ExecutionLog {
+  id: string
+  rule_id: string
+  rule_name: string | null
+  trigger_action: string
+  record_id: string
+  operator_openid: string | null
+  record_snapshot: Record<string, unknown> | null
+  status: string
+  error_message: string | null
+  duration_ms: number | null
+  response: Record<string, unknown> | null
+  created_at: string
+  rule_version?: number | null
+  fields?: Record<string, unknown> | null
+  beforeFields?: Record<string, unknown> | null
+  actions?: ActionExecution[] | null
+  totalDurationMs?: number | null
+}
+
+/**
+ * 日志筛选条件
+ */
 export interface LogFilter {
   ruleId?: string
   status?: 'success' | 'failed' | 'partial'
@@ -23,13 +47,27 @@ export interface LogFilter {
   endDate?: string
   limit?: number
   offset?: number
+  actionType?: string
+  minDuration?: number
+  maxDuration?: number
+}
+
+/**
+ * 执行统计信息
+ */
+export interface ExecutionStatistics {
+  total: number
+  success: number
+  failed: number
+  partial: number
+  avgDuration: number
 }
 
 export const executionLogsDb = {
-  async create(log: Omit<ExecutionLog, 'id' | 'created_at'>): Promise<ExecutionLog> {
+  async create(log: Record<string, unknown>): Promise<ExecutionLog> {
     const { data, error } = await getSupabase()
       .from('execution_logs')
-      .insert(log as ExecutionLog)
+      .insert(log as any)
       .select()
       .single()
 
@@ -122,13 +160,38 @@ export const executionLogsDb = {
   },
 
   async deleteOldLogs(olderThan: string): Promise<number> {
-    const { count, error } = await getSupabase()
+    const result = await getSupabase()
       .from('execution_logs')
       .delete()
       .lt('created_at', olderThan)
-      .select('*', { count: 'exact' })
 
+    const { count, error } = result
     if (error) throw error
     return count || 0
+  },
+
+  /**
+   * 获取执行统计
+   */
+  async getStatistics(filter: LogFilter = {}): Promise<ExecutionStatistics> {
+    const logs = await this.find(filter)
+
+    const stats: ExecutionStatistics = {
+      total: logs.length,
+      success: logs.filter(l => l.status === 'success').length,
+      failed: logs.filter(l => l.status === 'failed').length,
+      partial: logs.filter(l => l.status === 'partial').length,
+      avgDuration: 0,
+    }
+
+    if (logs.length > 0) {
+      const totalDuration = logs.reduce(
+        (sum, l) => sum + (l.duration_ms || l.totalDurationMs || 0),
+        0
+      )
+      stats.avgDuration = Math.round(totalDuration / logs.length)
+    }
+
+    return stats
   }
 }

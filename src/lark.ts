@@ -5,6 +5,7 @@ import { executeAction, registerActions } from './actions'
 import { executionLogsDb, ExecutionLog } from './db/execution-logs'
 import { bitablesDb } from './db/bitables'
 import { logger } from './logger'
+import { parseFeishuEvent, ParsedEvent } from './parser'
 
 config()
 
@@ -29,60 +30,6 @@ const processedEvents = new Set<string>()
 const PROCESSED_EVENTS_TTL = 60 * 60 * 1000
 const eventTimestamps = new Map<string, number>()
 
-function parseFieldValue(fieldValue: string): unknown {
-  if (!fieldValue) return null
-  try {
-    return JSON.parse(fieldValue)
-  } catch {
-    return fieldValue
-  }
-}
-
-function extractFieldsFromAction(
-  actionData: any,
-  fieldMappings: Record<string, string> = {}
-): { after: Record<string, unknown>; before: Record<string, unknown> } {
-  const after: Record<string, unknown> = {}
-  const before: Record<string, unknown> = {}
-
-  function parseFieldWithIdentity(item: any): unknown {
-    if (item.field_identity_value?.users?.length > 0) {
-      const users = item.field_identity_value.users.map((u: any) => ({
-        id: u.user_id?.open_id
-      }))
-      return users
-    }
-    if (item.field_value === '' || !item.field_value) {
-      return null
-    }
-    return parseFieldValue(item.field_value)
-  }
-
-  if (actionData?.after_value) {
-    for (const item of actionData.after_value) {
-      const value = parseFieldWithIdentity(item)
-      after[item.field_id] = value
-      const mappedName = fieldMappings[item.field_id]
-      if (mappedName) {
-        after[mappedName] = value
-      }
-    }
-  }
-
-  if (actionData?.before_value) {
-    for (const item of actionData.before_value) {
-      const value = parseFieldWithIdentity(item)
-      before[item.field_id] = value
-      const mappedName = fieldMappings[item.field_id]
-      if (mappedName) {
-        before[mappedName] = value
-      }
-    }
-  }
-
-  return { after, before }
-}
-
 async function logExecution(log: Omit<ExecutionLog, 'id' | 'created_at'>): Promise<void> {
   try {
     await executionLogsDb.create(log)
@@ -100,12 +47,24 @@ async function validateConnections(): Promise<void> {
   }
 }
 
-async function processEvent(data: any, version: string) {
-  const eventId = data.event_id
+async function processEvent(rawEvent: any, version: string) {
+  // 临时调试：打印原始事件
+  console.log('【调试】原始事件:', JSON.stringify(rawEvent, null, 2))
+
+  // 使用解析器解析飞书事件
+  let parsedEvent: ParsedEvent
+  try {
+    parsedEvent = parseFeishuEvent(rawEvent)
+  } catch (error) {
+    logger.error('[飞书] 解析事件失败:', error)
+    return
+  }
+
+  const { eventId, eventType, appToken, tableId, recordId, operatorOpenId, fields, beforeFields, timestamp } = parsedEvent
 
   const now = Date.now()
-  for (const [id, timestamp] of eventTimestamps.entries()) {
-    if (now - timestamp > PROCESSED_EVENTS_TTL) {
+  for (const [id, ts] of eventTimestamps.entries()) {
+    if (now - ts > PROCESSED_EVENTS_TTL) {
       processedEvents.delete(id)
       eventTimestamps.delete(id)
     }
@@ -116,39 +75,37 @@ async function processEvent(data: any, version: string) {
     return
   }
 
-  logger.info('[飞书] 收到事件完整内容:', JSON.stringify(data, null, 2))
+  logger.info('[飞书] 收到事件:', {
+    eventType,
+    tableId,
+    recordId,
+    operatorId: operatorOpenId,
+    fields,      // 变更后字段
+    beforeFields,  // 变更前字段
+  })
 
+  // 构建事件数据（兼容现有 EventData 结构）
   const eventData: EventData = {
-    file_token: data.file_token,
-    table_id: data.table_id,
-    action_list: data.action_list,
-    operator_id: data.operator_id,
+    file_token: appToken,
+    table_id: tableId,
+    action_list: [{
+      action: eventType === 'record_created' ? 'add' : eventType === 'record_deleted' ? 'remove' : 'set',
+      record_id: recordId
+    }],
+    operator_id: operatorOpenId ? { open_id: operatorOpenId } : undefined,
+    record: { fields, beforeFields }
   }
 
-  const actionData = data.action_list?.[0]
-  logger.info(`[飞书] 收到 ${version} 事件:`, {
-    action: actionData?.action,
-    tableId: data.table_id,
-    recordId: actionData?.record_id,
-    operatorId: data.operator_id?.open_id,
-  })
-  logger.info(`[飞书] 触发: 记录=${actionData?.record_id}, 操作=${actionData?.action}`)
-
   try {
-    const recordId = actionData?.record_id
-
     let fieldMappings: Record<string, string> = {}
     try {
-      const bitable = await bitablesDb.findByAppToken(data.file_token)
+      const bitable = await bitablesDb.findByAppToken(appToken)
       if (bitable?.field_mappings) {
         fieldMappings = bitable.field_mappings as Record<string, string>
       }
     } catch (e) {
       logger.warn('[飞书] 获取字段映射失败，使用默认映射')
     }
-
-    const { after: fields, before: beforeFields } = extractFieldsFromAction(actionData, fieldMappings)
-    ;(eventData as any).record = { fields, beforeFields }
 
     const matchedRules = await ruleMatcher.match(eventData)
 
@@ -164,8 +121,8 @@ async function processEvent(data: any, version: string) {
         recordId,
         record: fields,
         beforeRecord: beforeFields,
-        operatorOpenId: eventData.operator_id?.open_id,
-        action: actionData?.action,
+        operatorOpenId: operatorOpenId,
+        action: eventData.action_list?.[0]?.action || 'unknown',
       }
 
       // 执行所有满足条件的动作
@@ -183,14 +140,14 @@ async function processEvent(data: any, version: string) {
         await logExecution({
           rule_id: rule.id!,
           rule_name: `${rule.name} - ${ruleAction.name}`,
-          trigger_action: actionData?.action || 'unknown',
+          trigger_action: eventData.action_list?.[0]?.action || 'unknown',
           record_id: recordId,
-          operator_openid: eventData.operator_id?.open_id,
+          operator_openid: operatorOpenId || null,
           record_snapshot: { fields },
           status: actionResult.success ? 'success' : 'failed',
-          error_message: actionResult.error,
+          error_message: actionResult.error || null,
           duration_ms: actionResult.durationMs,
-          response: actionResult.response,
+          response: actionResult.response || null,
         })
 
         if (!actionResult.success && rule.on_failure === 'stop') {
