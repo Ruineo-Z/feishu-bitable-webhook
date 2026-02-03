@@ -210,6 +210,7 @@ async function processFieldChangedEvent(rawEvent: any) {
       case 'add':
       case 'update':
       case 'field_edited':
+      case 'field_added':
         // 字段编辑或新增/更新，需要更新映射
         if (after_value?.name) {
           await bitablesDb.addFieldMapping(bitableConfig.id!, field_id, after_value.name)
