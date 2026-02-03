@@ -4,6 +4,8 @@ config()
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi'
 import { startEventListener } from './lark'
 import { executionLogsDb } from './db/execution-logs'
+import { bitablesDb } from './db/bitables'
+import client from './lark'
 
 const app = new OpenAPIHono()
 
@@ -107,6 +109,62 @@ app.openapi(
     const { id } = c.req.valid('param')
     await executionLogsDb.delete(id)
     return c.json({ success: true })
+  }
+)
+
+const RefreshFieldsSchema = z.object({
+  id: z.string(),
+})
+
+app.openapi(
+  createRoute({
+    method: 'post',
+    path: '/api/bitables/{id}/refresh-fields',
+    request: {
+      params: RefreshFieldsSchema,
+    },
+    responses: {
+      200: {
+        description: '刷新字段映射成功',
+      },
+      404: {
+        description: '多维表格配置不存在',
+      },
+    },
+  }),
+  async (c) => {
+    const { id } = c.req.valid('param')
+    const bitable = await bitablesDb.findById(id)
+    if (!bitable) {
+      return c.json({ error: '多维表格配置不存在' }, 404)
+    }
+
+    try {
+      // 从飞书 API 获取最新字段列表
+      const mappings: Record<string, string> = {}
+      for (const tableId of bitable.table_ids) {
+        const res = await client.bitable.v1.appTableField.list({
+          path: { app_token: bitable.app_token, table_id: tableId }
+        })
+
+        const fields = res.data?.items || []
+        for (const field of fields) {
+          mappings[field.field_id!] = field.field_name!
+        }
+        break // 只获取第一个表的字段
+      }
+
+      // 更新到数据库
+      await bitablesDb.update(id, { field_mappings: mappings })
+
+      return c.json({
+        success: true,
+        fieldsCount: Object.keys(mappings).length,
+        mappings
+      })
+    } catch (error) {
+      return c.json({ error: `刷新失败: ${error}` }, 500)
+    }
   }
 )
 

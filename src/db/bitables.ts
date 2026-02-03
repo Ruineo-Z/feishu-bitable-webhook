@@ -95,5 +95,74 @@ export const bitablesDb = {
     })
 
     return matching[0] || null
+  },
+
+  async getFieldMappings(id: string): Promise<Record<string, string>> {
+    const { data, error } = await getSupabase()
+      .from('bitables')
+      .select('field_mappings')
+      .eq('id', id)
+      .single()
+
+    if (error) throw error
+    return data?.field_mappings || {}
+  },
+
+  async updateFieldMappings(id: string, mappings: Record<string, string>): Promise<void> {
+    const { error } = await getSupabase()
+      .from('bitables')
+      .update({
+        field_mappings: mappings,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+
+    if (error) throw error
+  },
+
+  async addFieldMapping(id: string, fieldId: string, fieldName: string): Promise<void> {
+    const { data, error } = await getSupabase()
+      .from('bitables')
+      .select('field_mappings')
+      .eq('id', id)
+      .single()
+
+    if (error) throw error
+
+    const mappings = (data?.field_mappings as Record<string, string>) || {}
+    mappings[fieldId] = fieldName
+
+    const { error: updateError } = await getSupabase()
+      .from('bitables')
+      .update({
+        field_mappings: mappings,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+
+    if (updateError) throw updateError
+  },
+
+  async removeFieldMapping(id: string, fieldId: string): Promise<void> {
+    const { data, error } = await getSupabase()
+      .from('bitables')
+      .select('field_mappings')
+      .eq('id', id)
+      .single()
+
+    if (error) throw error
+
+    const mappings = { ...(data?.field_mappings as Record<string, string>) }
+    delete mappings[fieldId]
+
+    const { error: updateError } = await getSupabase()
+      .from('bitables')
+      .update({
+        field_mappings: mappings,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+
+    if (updateError) throw updateError
   }
 }

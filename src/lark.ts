@@ -62,6 +62,13 @@ async function processEvent(rawEvent: any, version: string) {
 
   const { eventId, eventType, appToken, tableId, recordId, operatorOpenId, fields, beforeFields, timestamp } = parsedEvent
 
+  // 检查多维表格是否已配置
+  const bitable = await bitablesDb.findByTable(appToken, tableId)
+  if (!bitable) {
+    logger.warn(`[飞书] 未配置的多维表格或表: app_token=${appToken}, table_id=${tableId}`)
+    return
+  }
+
   const now = Date.now()
   for (const [id, ts] of eventTimestamps.entries()) {
     if (now - ts > PROCESSED_EVENTS_TTL) {
@@ -98,13 +105,8 @@ async function processEvent(rawEvent: any, version: string) {
 
   try {
     let fieldMappings: Record<string, string> = {}
-    try {
-      const bitable = await bitablesDb.findByAppToken(appToken)
-      if (bitable?.field_mappings) {
-        fieldMappings = bitable.field_mappings as Record<string, string>
-      }
-    } catch (e) {
-      logger.warn('[飞书] 获取字段映射失败，使用默认映射')
+    if (bitable.field_mappings) {
+      fieldMappings = bitable.field_mappings as Record<string, string>
     }
 
     const matchedRules = await ruleMatcher.match(eventData)
@@ -165,10 +167,99 @@ async function processEvent(rawEvent: any, version: string) {
   }
 }
 
+async function processFieldChangedEvent(rawEvent: any) {
+  const { field_id, field_name, table_id, app_token, action } = rawEvent || {}
+
+  logger.info('[飞书] 字段变更事件:', { field_id, field_name, table_id, app_token, action })
+
+  if (!field_id || !app_token) {
+    logger.warn('[飞书] 字段变更事件缺少必要字段')
+    return
+  }
+
+  try {
+    const bitable = await bitablesDb.findByAppToken(app_token)
+    if (!bitable) {
+      logger.warn(`[飞书] 未配置的多维表格: ${app_token}`)
+      return
+    }
+
+    // 检查 table_id 是否在配置中
+    if (bitable.table_ids.length > 0 && !bitable.table_ids.includes(table_id)) {
+      logger.warn(`[飞书] 未配置的表: ${app_token}/${table_id}`)
+      return
+    }
+
+    switch (action) {
+      case 'add':
+      case 'update':
+        await bitablesDb.addFieldMapping(bitable.id!, field_id, field_name)
+        logger.info(`[飞书] 更新字段映射: ${field_id} -> ${field_name}`)
+        break
+      case 'delete':
+        await bitablesDb.removeFieldMapping(bitable.id!, field_id)
+        logger.info(`[飞书] 删除字段映射: ${field_id}`)
+        break
+      default:
+        logger.warn(`[飞书] 未知的字段变更动作: ${action}`)
+    }
+  } catch (error) {
+    logger.error('[飞书] 处理字段变更事件失败:', error)
+  }
+}
+
+async function initializeFieldMappings(bitable: any): Promise<void> {
+  if (bitable.field_mappings && Object.keys(bitable.field_mappings).length > 0) {
+    logger.info(`[飞书] ${bitable.name} 已存在字段映射，跳过初始化`)
+    return
+  }
+
+  logger.info(`[飞书] 正在初始化 ${bitable.name} 的字段映射...`)
+
+  try {
+    for (const tableId of bitable.table_ids) {
+      const res = await client.bitable.v1.appTableField.list({
+        path: { app_token: bitable.app_token, table_id: tableId }
+      })
+
+      const fields = res.data?.items || []
+      const mappings: Record<string, string> = {}
+
+      for (const field of fields) {
+        mappings[field.field_id!] = field.field_name!
+      }
+
+      // 更新到数据库
+      const { error } = await getSupabase()
+        .from('bitables')
+        .update({
+          field_mappings: mappings,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', bitable.id)
+
+      if (error) throw error
+
+      logger.info(`[飞书] 初始化字段映射成功: ${fields.length} 个字段`)
+      break // 只初始化第一个表
+    }
+  } catch (error) {
+    logger.error(`[飞书] 初始化字段映射失败: ${error}`)
+  }
+}
+
+import { getSupabase } from './db/client'
+
 export const startEventListener = async () => {
   try {
     registerActions()
     await validateConnections()
+
+    // 初始化所有已配置多维表格的字段映射
+    const bitables = await bitablesDb.findAll()
+    for (const bitable of bitables) {
+      await initializeFieldMappings(bitable)
+    }
 
     logger.info('[飞书] 正在启动长连接...')
 
@@ -182,6 +273,11 @@ export const startEventListener = async () => {
         'drive.file.bitable_record_changed_v2': async (data: any) => {
           processEvent(data, 'v2').catch(err => {
             logger.error('[飞书] 异步处理失败:', err)
+          })
+        },
+        'drive.file.bitable_field_changed_v1': async (data: any) => {
+          processFieldChangedEvent(data).catch(err => {
+            logger.error('[飞书] 字段变更事件处理失败:', err)
           })
         },
       }),
