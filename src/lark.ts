@@ -217,8 +217,9 @@ async function processFieldChangedEvent(rawEvent: any) {
         }
         break
       case 'delete':
+      case 'field_deleted':
         await bitablesDb.removeFieldMapping(bitableConfig.id!, field_id)
-        log.info(`删除字段映射: ${field_id}`)
+        log.info(`删除字段映射: ${field_id} (${before_value?.name || field_id})`)
         break
       default:
         log.warn(`未知的字段变更动作: ${action}`)
