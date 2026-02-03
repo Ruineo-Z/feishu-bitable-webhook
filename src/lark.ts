@@ -1,11 +1,15 @@
 import { config } from 'dotenv'
 import * as Lark from '@larksuiteoapi/node-sdk'
 import { RuleMatcher, EventData, MatchedRule } from './engine'
-import { executeAction, registerActions } from './actions'
+import { executeAction, registerActions, executeActionWithTimeout } from './actions'
 import { executionLogsDb, ExecutionLog } from './db/execution-logs'
 import { bitablesDb } from './db/bitables'
 import { logger, createEventTraceId, createFeishuLogger } from './logger'
 import { parseFeishuEvent, ParsedEvent } from './parser'
+import { getSupabase } from './db/client'
+
+// 默认动作超时时间（毫秒）
+const ACTION_TIMEOUT_MS = 30000 // 30秒
 
 config()
 
@@ -30,13 +34,44 @@ const processedEvents = new Set<string>()
 const PROCESSED_EVENTS_TTL = 60 * 60 * 1000
 const eventTimestamps = new Map<string, number>()
 
-async function logExecution(executionLog: Omit<ExecutionLog, 'id' | 'created_at'>): Promise<void> {
+// ============ 异步日志队列 ============
+const logQueue: ExecutionLog[] = []
+const LOG_QUEUE_MAX_SIZE = 1000
+const LOG_FLUSH_INTERVAL = 5000 // 5秒批量写入
+
+async function flushExecutionLogs(): Promise<void> {
+  if (logQueue.length === 0) return
+
+  const logs = logQueue.splice(0, logQueue.length)
+  const log = createFeishuLogger('LOG')
+
   try {
-    await executionLogsDb.create(executionLog)
+    const { error } = await getSupabase()
+      .from('execution_logs')
+      .insert(logs)
+
+    if (error) {
+      log.error('批量写入执行日志失败:', error)
+    }
   } catch (error) {
-    // Cannot use log here as this is called from within processEvent
-    logger.error('[飞书] 写入执行日志失败:', error)
+    log.error('批量写入执行日志异常:', error)
   }
+}
+
+function queueExecutionLog(executionLog: Omit<ExecutionLog, 'id' | 'created_at'>): void {
+  // 超过最大队列大小时，移除最旧的日志
+  if (logQueue.length >= LOG_QUEUE_MAX_SIZE) {
+    logQueue.shift()
+  }
+  logQueue.push(executionLog as ExecutionLog)
+}
+
+// 启动日志批量写入定时器
+setInterval(flushExecutionLogs, LOG_FLUSH_INTERVAL)
+
+function logExecution(executionLog: Omit<ExecutionLog, 'id' | 'created_at'>): void {
+  // 异步写入，不阻塞主流程
+  queueExecutionLog(executionLog)
 }
 
 async function validateConnections(): Promise<void> {
@@ -137,7 +172,8 @@ async function processEvent(rawEvent: any, version: string) {
       for (const ruleAction of matchedActions) {
         log.info(`执行动作: ${rule.name} - ${ruleAction.name}`)
 
-        const actionResult = await executeAction(ruleAction.action, context)
+        // 使用超时控制执行动作
+        const actionResult = await executeActionWithTimeout(ruleAction.action, context, ACTION_TIMEOUT_MS)
 
         if (actionResult.success) {
           log.success(`动作 "${ruleAction.name}" 执行成功`)
@@ -145,7 +181,8 @@ async function processEvent(rawEvent: any, version: string) {
           log.error(`动作 "${ruleAction.name}" 执行失败:`, actionResult.error)
         }
 
-        await logExecution({
+        // 异步写入日志，不阻塞主流程
+        logExecution({
           rule_id: rule.id!,
           rule_name: `${rule.name} - ${ruleAction.name}`,
           trigger_action: eventData.action_list?.[0]?.action || 'unknown',
@@ -274,8 +311,6 @@ async function initializeFieldMappings(bitable: any): Promise<void> {
     log.error(`初始化字段映射失败:`, error)
   }
 }
-
-import { getSupabase } from './db/client'
 
 export const startEventListener = async () => {
   const log = createFeishuLogger('START')

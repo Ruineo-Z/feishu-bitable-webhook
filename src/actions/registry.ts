@@ -116,3 +116,23 @@ export async function executeAction(
     }
   }
 }
+
+// 默认超时时间（毫秒）
+const DEFAULT_ACTION_TIMEOUT = 30000 // 30秒
+
+export async function executeActionWithTimeout(
+  action: ActionConfig,
+  context: Record<string, unknown>,
+  timeoutMs: number = DEFAULT_ACTION_TIMEOUT
+): Promise<ActionResult> {
+  return Promise.race([
+    executeAction(action, context),
+    new Promise<ActionResult>((_, reject) =>
+      setTimeout(() => reject(new Error(`Action timeout after ${timeoutMs}ms`)), timeoutMs)
+    )
+  ]).catch((error): ActionResult => ({
+    success: false,
+    error: error instanceof Error ? error.message : String(error),
+    durationMs: timeoutMs
+  }))
+}

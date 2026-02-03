@@ -21,7 +21,7 @@ export function registerActions(): void {
   ActionRegistry.register('query_records', queryRecords)
 }
 
-export { ActionRegistry, executeAction } from './registry'
+export { ActionRegistry, executeAction, executeActionWithTimeout } from './registry'
 export * from './send-feishu-message'
 export * from './call-api'
 export * from './create-record'
