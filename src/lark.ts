@@ -181,10 +181,18 @@ async function processFieldChangedEvent(rawEvent: any) {
   const table_id = rawEvent?.table_id
   const actionItem = rawEvent?.action_list?.[0]
   const field_id = actionItem?.field_id
-  const field_name = actionItem?.after_value?.name
+  const before_value = actionItem?.before_value
+  const after_value = actionItem?.after_value
   const action = actionItem?.action
 
-  log.info('字段变更解析:', { app_token, table_id, field_id, field_name, action })
+  log.info('字段变更解析:', {
+    app_token,
+    table_id,
+    field_id,
+    before: before_value,
+    after: after_value,
+    action
+  })
 
   if (!field_id || !app_token) {
     log.warn('字段变更事件缺少必要字段')
@@ -201,8 +209,12 @@ async function processFieldChangedEvent(rawEvent: any) {
     switch (action) {
       case 'add':
       case 'update':
-        await bitablesDb.addFieldMapping(bitableConfig.id!, field_id, field_name)
-        log.info(`更新字段映射: ${field_id} -> ${field_name}`)
+      case 'field_edited':
+        // 字段编辑或新增/更新，需要更新映射
+        if (after_value?.name) {
+          await bitablesDb.addFieldMapping(bitableConfig.id!, field_id, after_value.name)
+          log.info(`更新字段映射: ${field_id} (${before_value?.name || '?'} -> ${after_value.name})`)
+        }
         break
       case 'delete':
         await bitablesDb.removeFieldMapping(bitableConfig.id!, field_id)
