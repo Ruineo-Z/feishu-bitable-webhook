@@ -4,6 +4,18 @@ description: 创建符合 Conventional Commits 规范的 git commit
 
 我需要你帮我创建一个规范的 git commit。请按照以下步骤操作：
 
+## 0. 检查 .gitignore
+在开始之前，必须执行以下检查：
+```bash
+# 检查项目是否存在 .gitignore 文件
+if [ ! -f ".gitignore" ]; then
+    echo "⚠️ 警告：项目根目录不存在 .gitignore 文件"
+    echo "建议创建一个 .gitignore 文件来管理需要忽略的文件和目录"
+    echo "是否继续创建 commit？(继续/取消)"
+    exit 1
+fi
+```
+
 ## 1. 分析变更
 运行以下命令获取当前状态和变更信息：
 - `git status` - 查看暂存区和未暂存的文件
@@ -51,8 +63,25 @@ description: 创建符合 Conventional Commits 规范的 git commit
 git commit -m "生成的 commit message"
 ```
 
-**重要**：
+## 5. 禁止自动推送和合并
+**重要约束**（绝对禁止）：
+- ❌ 禁止自动执行 `git push`
+- ❌ 禁止自动执行 `git pull`
+- ❌ 禁止自动执行 `git merge`
+- ❌ 禁止自动执行 `git rebase`
+- ❌ 禁止自动执行任何分支操作
+
+仅当我明确要求推送时，才可以执行 `git push`。
+
+## 6. 暂存规则
+根据 `.gitignore` 文件判断哪些文件需要忽略：
+- 使用 `git add -A` 或 `git add <文件>` 暂存时，git 会自动忽略 `.gitignore` 中指定的文件和目录
+- 不要手动排除以 `.` 开头的目录或文件，让 git 根据 `.gitignore` 自动判断
+- 如果项目没有 `.gitignore`，在步骤 0 中已经警告并停止
+
+## 重要
 - 如果暂存区为空，请先询问我需要暂存哪些文件
 - 如果没有变更，告诉我当前没有需要提交的内容
 - 始终等待我的确认后再执行 commit 操作
 - 如果我不确认，不要执行任何 git 操作
+- **绝对禁止**自动推送或合并分支
