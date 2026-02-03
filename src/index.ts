@@ -141,17 +141,15 @@ app.openapi(
 
     try {
       // 从飞书 API 获取最新字段列表
-      const mappings: Record<string, string> = {}
-      for (const tableId of bitable.table_ids) {
-        const res = await client.bitable.v1.appTableField.list({
-          path: { app_token: bitable.app_token, table_id: tableId }
-        })
+      const res = await client.bitable.v1.appTableField.list({
+        path: { app_token: bitable.app_token, table_id: bitable.table_id }
+      })
 
-        const fields = res.data?.items || []
-        for (const field of fields) {
-          mappings[field.field_id!] = field.field_name!
-        }
-        break // 只获取第一个表的字段
+      const fields = res.data?.items || []
+      const mappings: Record<string, string> = {}
+
+      for (const field of fields) {
+        mappings[field.field_id!] = field.field_name!
       }
 
       // 更新到数据库

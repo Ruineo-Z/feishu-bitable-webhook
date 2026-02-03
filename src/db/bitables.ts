@@ -3,8 +3,9 @@ import { getSupabase } from './client'
 export interface BitableConfig {
   id?: string
   app_token: string
-  name: string
-  table_ids: string[]
+  name: string           // 多维表格名称
+  table_id: string       // 表 ID
+  table_name?: string    // 表名称（可选）
   field_mappings?: Record<string, string>
   created_at?: string
   updated_at?: string
@@ -36,18 +37,14 @@ export const bitablesDb = {
     return data
   },
 
-  async findByAppToken(appToken: string): Promise<BitableConfig | null> {
+  async findByAppToken(appToken: string): Promise<BitableConfig[]> {
     const { data, error } = await getSupabase()
       .from('bitables')
       .select('*')
       .eq('app_token', appToken)
-      .single()
 
-    if (error) {
-      if (error.code === 'PGRST116') return null
-      throw error
-    }
-    return data
+    if (error) throw error
+    return data || []
   },
 
   async findAll(): Promise<BitableConfig[]> {
@@ -81,20 +78,31 @@ export const bitablesDb = {
     if (error) throw error
   },
 
+  // 根据 app_token + table_id 查找
   async findByTable(appToken: string, tableId: string): Promise<BitableConfig | null> {
+    const { data, error } = await getSupabase()
+      .from('bitables')
+      .select('*')
+      .eq('app_token', appToken)
+      .eq('table_id', tableId)
+      .single()
+
+    if (error) {
+      if (error.code === 'PGRST116') return null
+      throw error
+    }
+    return data
+  },
+
+  // 根据 app_token 查找所有关联的表
+  async findTablesByAppToken(appToken: string): Promise<BitableConfig[]> {
     const { data, error } = await getSupabase()
       .from('bitables')
       .select('*')
       .eq('app_token', appToken)
 
     if (error) throw error
-
-    const matching = (data || []).filter(bitable => {
-      const tableIds = bitable.table_ids
-      return tableIds.length === 0 || tableIds.includes(tableId)
-    })
-
-    return matching[0] || null
+    return data || []
   },
 
   async getFieldMappings(id: string): Promise<Record<string, string>> {

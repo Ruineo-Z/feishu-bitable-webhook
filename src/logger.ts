@@ -2,8 +2,22 @@ import colors from 'colors'
 
 colors.enable()
 
-function formatTime(date: Date): string {
-  return date.toLocaleTimeString('zh-CN', { hour12: false })
+function generateTraceId(): string {
+  return Math.random().toString(36).substring(2, 8).toUpperCase()
+}
+
+function getCallerLocation(): string {
+  const stack = new Error().stack
+  if (!stack) return 'unknown:0'
+  const lines = stack.split('\n').slice(3)
+  for (const line of lines) {
+    const match = line.match(/at\s+(?:.*\s+)?(.+):(\d+):\d+/)
+    if (match) {
+      const file = match[1].split('/').pop() || 'unknown'
+      return `${file}:${match[2]}`
+    }
+  }
+  return 'unknown:0'
 }
 
 function formatMessage(args: unknown[]): string {
@@ -14,27 +28,55 @@ function formatMessage(args: unknown[]): string {
   }).join(' ')
 }
 
-export const logger = {
-  info: (...args: unknown[]) => {
-    const msg = formatMessage(args)
-    console.log(`[${'INFO'.cyan}]    ${msg} ${formatTime(new Date())}`)
-  },
-  success: (...args: unknown[]) => {
-    const msg = formatMessage(args)
-    console.log(`[${'SUCCESS'.green}] ${msg} ${formatTime(new Date())}`)
-  },
-  error: (...args: unknown[]) => {
-    const msg = formatMessage(args)
-    console.log(`[${'ERROR'.red}]   ${msg} ${formatTime(new Date())}`)
-  },
-  warn: (...args: unknown[]) => {
-    const msg = formatMessage(args)
-    console.log(`[${'WARN'.yellow}]    ${msg} ${formatTime(new Date())}`)
-  },
-  debug: (...args: unknown[]) => {
-    const msg = formatMessage(args)
-    console.log(`[${'DEBUG'.gray}]   ${msg} ${formatTime(new Date())}`)
+function formatLog(level: string, colorFn: (s: string) => string, args: unknown[], traceId?: string, caller?: string) {
+  const timestamp = new Date().toISOString().slice(11, 23)
+  const msg = formatMessage(args)
+  console.log(`[${timestamp}] [${colorFn(level)}] [${traceId || generateTraceId()}] ${caller || getCallerLocation()} ${msg}`)
+}
+
+interface LoggerInterface {
+  info: (...args: unknown[]) => void
+  success: (...args: unknown[]) => void
+  error: (...args: unknown[]) => void
+  warn: (...args: unknown[]) => void
+  debug: (...args: unknown[]) => void
+  withTrace: (traceId: string) => LoggerInterface
+  at: (caller: string) => LoggerInterface
+}
+
+function createLogger(baseTraceId?: string): LoggerInterface {
+  const l: LoggerInterface = {
+    info: (...args) => formatLog('INFO', colors.cyan, args, baseTraceId),
+    success: (...args) => formatLog('SUCCESS', colors.green, args, baseTraceId),
+    error: (...args) => formatLog('ERROR', colors.red, args, baseTraceId),
+    warn: (...args) => formatLog('WARN', colors.yellow, args, baseTraceId),
+    debug: (...args) => formatLog('DEBUG', colors.gray, args, baseTraceId),
+    withTrace: (traceId: string) => createLogger(traceId),
+    at: (caller: string) => createLoggerWithCaller(baseTraceId, caller)
+  }
+  return l
+}
+
+function createLoggerWithCaller(baseTraceId: string | undefined, caller: string): LoggerInterface {
+  return {
+    info: (...args) => formatLog('INFO', colors.cyan, args, baseTraceId, caller),
+    success: (...args) => formatLog('SUCCESS', colors.green, args, baseTraceId, caller),
+    error: (...args) => formatLog('ERROR', colors.red, args, baseTraceId, caller),
+    warn: (...args) => formatLog('WARN', colors.yellow, args, baseTraceId, caller),
+    debug: (...args) => formatLog('DEBUG', colors.gray, args, baseTraceId, caller),
+    withTrace: (traceId: string) => createLoggerWithCaller(traceId, caller),
+    at: (newCaller: string) => createLoggerWithCaller(baseTraceId, newCaller)
   }
 }
 
+export const logger = createLogger()
+
+export function createFeishuLogger(traceId: string) {
+  return logger.withTrace(traceId).at('lark.ts')
+}
+
 export const log = logger.info
+
+export function createEventTraceId(): string {
+  return `EVT-${Date.now().toString(36).toUpperCase()}-${generateTraceId()}`
+}

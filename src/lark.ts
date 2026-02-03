@@ -4,7 +4,7 @@ import { RuleMatcher, EventData, MatchedRule } from './engine'
 import { executeAction, registerActions } from './actions'
 import { executionLogsDb, ExecutionLog } from './db/execution-logs'
 import { bitablesDb } from './db/bitables'
-import { logger } from './logger'
+import { logger, createEventTraceId, createFeishuLogger } from './logger'
 import { parseFeishuEvent, ParsedEvent } from './parser'
 
 config()
@@ -30,42 +30,45 @@ const processedEvents = new Set<string>()
 const PROCESSED_EVENTS_TTL = 60 * 60 * 1000
 const eventTimestamps = new Map<string, number>()
 
-async function logExecution(log: Omit<ExecutionLog, 'id' | 'created_at'>): Promise<void> {
+async function logExecution(executionLog: Omit<ExecutionLog, 'id' | 'created_at'>): Promise<void> {
   try {
-    await executionLogsDb.create(log)
+    await executionLogsDb.create(executionLog)
   } catch (error) {
+    // Cannot use log here as this is called from within processEvent
     logger.error('[飞书] 写入执行日志失败:', error)
   }
 }
 
 async function validateConnections(): Promise<void> {
-  logger.info('[飞书] 验证多维表格连接配置...')
+  const log = createFeishuLogger('INIT')
+  log.info('验证多维表格连接配置...')
   const bitables = await bitablesDb.findAll()
-  logger.info(`[飞书] 已配置 ${bitables.length} 个多维表格`)
+  log.info(`已配置 ${bitables.length} 个多维表格`)
   for (const bitable of bitables) {
-    logger.info(`[飞书] - ${bitable.name}: ${bitable.app_token}`)
+    log.info(`- ${bitable.name}: ${bitable.app_token}`)
   }
 }
 
 async function processEvent(rawEvent: any, version: string) {
-  // 临时调试：打印原始事件
-  console.log('【调试】原始事件:', JSON.stringify(rawEvent, null, 2))
+  // 为每个事件生成追踪 ID
+  const traceId = createEventTraceId()
+  const log = createFeishuLogger(traceId)
 
   // 使用解析器解析飞书事件
   let parsedEvent: ParsedEvent
   try {
     parsedEvent = parseFeishuEvent(rawEvent)
   } catch (error) {
-    logger.error('[飞书] 解析事件失败:', error)
+    log.error('解析事件失败:', error)
     return
   }
 
-  const { eventId, eventType, appToken, tableId, recordId, operatorOpenId, fields, beforeFields, timestamp } = parsedEvent
+  const { eventId, eventType, appToken, tableId, recordId, operatorOpenId, fields, beforeFields } = parsedEvent
 
   // 检查多维表格是否已配置
   const bitable = await bitablesDb.findByTable(appToken, tableId)
   if (!bitable) {
-    logger.warn(`[飞书] 未配置的多维表格或表: app_token=${appToken}, table_id=${tableId}`)
+    log.warn(`未配置: app_token=${appToken}, table_id=${tableId}`)
     return
   }
 
@@ -78,18 +81,11 @@ async function processEvent(rawEvent: any, version: string) {
   }
 
   if (eventId && processedEvents.has(eventId)) {
-    logger.warn(`[飞书] 事件 ${eventId} 已处理过，跳过`)
+    log.warn(`事件已处理: ${eventId}`)
     return
   }
 
-  logger.info('[飞书] 收到事件:', {
-    eventType,
-    tableId,
-    recordId,
-    operatorId: operatorOpenId,
-    fields,      // 变更后字段
-    beforeFields,  // 变更前字段
-  })
+  log.info(`${bitable.name || appToken}: ${eventType} ${recordId}`)
 
   // 构建事件数据（兼容现有 EventData 结构）
   const eventData: EventData = {
@@ -103,6 +99,16 @@ async function processEvent(rawEvent: any, version: string) {
     record: { fields, beforeFields }
   }
 
+  // 打印变更日志（合并为一条，便于追踪）
+  const eventLog = {
+    event: eventType,
+    recordId,
+    operator: operatorOpenId,
+    before: beforeFields,
+    after: fields
+  }
+  log.info(JSON.stringify(eventLog))
+
   try {
     let fieldMappings: Record<string, string> = {}
     if (bitable.field_mappings) {
@@ -112,11 +118,11 @@ async function processEvent(rawEvent: any, version: string) {
     const matchedRules = await ruleMatcher.match(eventData)
 
     if (matchedRules.length === 0) {
-      logger.info('[飞书] 无匹配规则')
+      log.info('无匹配规则')
       return
     }
 
-    logger.info('[飞书] 匹配规则: ' + matchedRules.map(r => r.rule.name).join(', '))
+    log.info('匹配规则: ' + matchedRules.map(r => r.rule.name).join(', '))
 
     for (const { rule, recordId, matchedActions } of matchedRules) {
       const context = {
@@ -129,14 +135,14 @@ async function processEvent(rawEvent: any, version: string) {
 
       // 执行所有满足条件的动作
       for (const ruleAction of matchedActions) {
-        logger.info(`[飞书] 执行动作: ${rule.name} - ${ruleAction.name}`)
+        log.info(`执行动作: ${rule.name} - ${ruleAction.name}`)
 
         const actionResult = await executeAction(ruleAction.action, context)
 
         if (actionResult.success) {
-          logger.success(`[飞书]   动作 "${ruleAction.name}" 执行成功`)
+          log.success(`动作 "${ruleAction.name}" 执行成功`)
         } else {
-          logger.error(`[飞书]   动作 "${ruleAction.name}" 执行失败:`, actionResult.error)
+          log.error(`动作 "${ruleAction.name}" 执行失败:`, actionResult.error)
         }
 
         await logExecution({
@@ -162,95 +168,103 @@ async function processEvent(rawEvent: any, version: string) {
       processedEvents.add(eventId)
       eventTimestamps.set(eventId, Date.now())
     }
-  } catch (error) {
-    logger.error('[飞书] 处理事件失败:', error)
+    } catch (error) {
+      log.error('处理事件失败:', error)
+    }
   }
-}
 
 async function processFieldChangedEvent(rawEvent: any) {
-  const { field_id, field_name, table_id, app_token, action } = rawEvent || {}
+  const traceId = createEventTraceId()
+  const log = createFeishuLogger(traceId)
 
-  logger.info('[飞书] 字段变更事件:', { field_id, field_name, table_id, app_token, action })
+  const app_token = rawEvent?.file_token
+  const table_id = rawEvent?.table_id
+  const actionItem = rawEvent?.action_list?.[0]
+  const field_id = actionItem?.field_id
+  const field_name = actionItem?.after_value?.name
+  const action = actionItem?.action
+
+  log.info('字段变更解析:', { app_token, table_id, field_id, field_name, action })
 
   if (!field_id || !app_token) {
-    logger.warn('[飞书] 字段变更事件缺少必要字段')
+    log.warn('字段变更事件缺少必要字段')
     return
   }
 
   try {
-    const bitable = await bitablesDb.findByAppToken(app_token)
-    if (!bitable) {
-      logger.warn(`[飞书] 未配置的多维表格: ${app_token}`)
-      return
-    }
-
-    // 检查 table_id 是否在配置中
-    if (bitable.table_ids.length > 0 && !bitable.table_ids.includes(table_id)) {
-      logger.warn(`[飞书] 未配置的表: ${app_token}/${table_id}`)
+    const bitableConfig = await bitablesDb.findByTable(app_token, table_id)
+    if (!bitableConfig) {
+      log.warn(`未配置的表: ${app_token}/${table_id}`)
       return
     }
 
     switch (action) {
       case 'add':
       case 'update':
-        await bitablesDb.addFieldMapping(bitable.id!, field_id, field_name)
-        logger.info(`[飞书] 更新字段映射: ${field_id} -> ${field_name}`)
+        await bitablesDb.addFieldMapping(bitableConfig.id!, field_id, field_name)
+        log.info(`更新字段映射: ${field_id} -> ${field_name}`)
         break
       case 'delete':
-        await bitablesDb.removeFieldMapping(bitable.id!, field_id)
-        logger.info(`[飞书] 删除字段映射: ${field_id}`)
+        await bitablesDb.removeFieldMapping(bitableConfig.id!, field_id)
+        log.info(`删除字段映射: ${field_id}`)
         break
       default:
-        logger.warn(`[飞书] 未知的字段变更动作: ${action}`)
+        log.warn(`未知的字段变更动作: ${action}`)
     }
   } catch (error) {
-    logger.error('[飞书] 处理字段变更事件失败:', error)
+    log.error('处理字段变更事件失败:', error)
   }
 }
 
 async function initializeFieldMappings(bitable: any): Promise<void> {
+  const log = createFeishuLogger('INIT')
   if (bitable.field_mappings && Object.keys(bitable.field_mappings).length > 0) {
-    logger.info(`[飞书] ${bitable.name} 已存在字段映射，跳过初始化`)
+    log.info(`${bitable.name} (${bitable.table_id}) 已存在字段映射，跳过初始化`)
     return
   }
 
-  logger.info(`[飞书] 正在初始化 ${bitable.name} 的字段映射...`)
+  log.info(`正在初始化 ${bitable.name} (${bitable.table_id}) 的字段映射...`)
 
   try {
-    for (const tableId of bitable.table_ids) {
-      const res = await client.bitable.v1.appTableField.list({
-        path: { app_token: bitable.app_token, table_id: tableId }
-      })
+    const res = await client.bitable.v1.appTableField.list({
+      path: { app_token: bitable.app_token, table_id: bitable.table_id }
+    })
 
-      const fields = res.data?.items || []
-      const mappings: Record<string, string> = {}
+    const fields = res.data?.items || []
+    const mappings: Record<string, string> = {}
 
-      for (const field of fields) {
-        mappings[field.field_id!] = field.field_name!
-      }
-
-      // 更新到数据库
-      const { error } = await getSupabase()
-        .from('bitables')
-        .update({
-          field_mappings: mappings,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', bitable.id)
-
-      if (error) throw error
-
-      logger.info(`[飞书] 初始化字段映射成功: ${fields.length} 个字段`)
-      break // 只初始化第一个表
+    for (const field of fields) {
+      mappings[field.field_id!] = field.field_name!
     }
+
+    // 更新到数据库
+    const updates: any = {
+      field_mappings: mappings,
+      updated_at: new Date().toISOString()
+    }
+
+    // 如果没有表名，使用多维表格名称作为默认
+    if (!bitable.table_name && bitable.name) {
+      updates.table_name = bitable.name
+    }
+
+    const { error } = await getSupabase()
+      .from('bitables')
+      .update(updates)
+      .eq('id', bitable.id)
+
+    if (error) throw error
+
+    log.info(`初始化字段映射成功: ${fields.length} 个字段`)
   } catch (error) {
-    logger.error(`[飞书] 初始化字段映射失败: ${error}`)
+    log.error(`初始化字段映射失败:`, error)
   }
 }
 
 import { getSupabase } from './db/client'
 
 export const startEventListener = async () => {
+  const log = createFeishuLogger('START')
   try {
     registerActions()
     await validateConnections()
@@ -261,31 +275,31 @@ export const startEventListener = async () => {
       await initializeFieldMappings(bitable)
     }
 
-    logger.info('[飞书] 正在启动长连接...')
+    log.info('正在启动长连接...')
 
     wsClient.start({
       eventDispatcher: new Lark.EventDispatcher({}).register({
         'drive.file.bitable_record_changed_v1': async (data: any) => {
           processEvent(data, 'v1').catch(err => {
-            logger.error('[飞书] 异步处理失败:', err)
+            log.error('v1 事件异步处理失败:', err)
           })
         },
         'drive.file.bitable_record_changed_v2': async (data: any) => {
           processEvent(data, 'v2').catch(err => {
-            logger.error('[飞书] 异步处理失败:', err)
+            log.error('v2 事件异步处理失败:', err)
           })
         },
         'drive.file.bitable_field_changed_v1': async (data: any) => {
           processFieldChangedEvent(data).catch(err => {
-            logger.error('[飞书] 字段变更事件处理失败:', err)
+            log.error('字段变更事件处理失败:', err)
           })
         },
       }),
     })
 
-    logger.success('[飞书] 长连接事件监听已启动')
+    log.success('长连接事件监听已启动')
   } catch (error) {
-    logger.error('[飞书] 启动事件监听失败:', error)
+    log.error('启动事件监听失败:', error)
     throw error
   }
 }
