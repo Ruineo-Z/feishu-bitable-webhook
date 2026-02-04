@@ -1,6 +1,6 @@
 import { ActionHandler, ActionResult } from './registry'
 import client from '../lark'
-import { logger } from '../logger'
+import { logger, createLoggerWithTrace } from '../logger'
 import { ActionParams } from '../db/rules'
 
 interface BatchCreateParams {
@@ -14,12 +14,14 @@ interface BatchCreateParams {
 const batchCreate: ActionHandler = {
   async execute(params: ActionParams, context: Record<string, unknown>): Promise<ActionResult> {
     const { app_token, table_id, records } = params as unknown as BatchCreateParams
+    const traceId = (context as { traceId?: string }).traceId
+    const log = traceId ? createLoggerWithTrace(traceId, 'batch-create.ts') : logger
 
     if (!app_token || !table_id || !records || !Array.isArray(records)) {
       throw new Error('Missing required params: app_token, table_id, or records (must be array)')
     }
 
-    logger.info('[batch-create] 请求参数:', JSON.stringify({ app_token, table_id, recordsCount: records.length }, null, 2))
+    log.info('[batch-create] 请求参数:', JSON.stringify({ app_token, table_id, recordsCount: records.length }, null, 2))
 
     const startTime = Date.now()
 
@@ -35,7 +37,7 @@ const batchCreate: ActionHandler = {
       })
 
       const createdRecords = res.data?.records || []
-      logger.info('[batch-create] 成功创建:', createdRecords.length, '条记录')
+      log.info('[batch-create] 成功创建:', createdRecords.length, '条记录')
 
       return {
         success: true,
@@ -49,7 +51,7 @@ const batchCreate: ActionHandler = {
         durationMs: Date.now() - startTime
       }
     } catch (error: any) {
-      logger.error('[batch-create] 错误:', error?.response?.data || error)
+      log.error('[batch-create] 错误:', error?.response?.data || error)
       throw new Error(`Failed to batch create records: ${error}`)
     }
   }

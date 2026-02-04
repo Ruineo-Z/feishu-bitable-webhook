@@ -1,6 +1,6 @@
 import { ActionHandler, ActionResult } from './registry'
 import client from '../lark'
-import { logger } from '../logger'
+import { logger, createLoggerWithTrace } from '../logger'
 import { ActionParams } from '../db/rules'
 
 interface QueryRecordsParams {
@@ -26,12 +26,14 @@ interface QueryRecordsParams {
 const queryRecords: ActionHandler = {
   async execute(params: ActionParams, context: Record<string, unknown>): Promise<ActionResult> {
     const { app_token, table_id, filter, sort, page_size = 50, page_token, field_names } = params as unknown as QueryRecordsParams
+    const traceId = (context as { traceId?: string }).traceId
+    const log = traceId ? createLoggerWithTrace(traceId, 'query-records.ts') : logger
 
     if (!app_token || !table_id) {
       throw new Error('Missing required params: app_token or table_id')
     }
 
-    logger.info('[query-records] 请求参数:', JSON.stringify({ app_token, table_id, filter, page_size }, null, 2))
+    log.info('[query-records] 请求参数:', JSON.stringify({ app_token, table_id, filter, page_size }, null, 2))
 
     const startTime = Date.now()
 
@@ -57,7 +59,7 @@ const queryRecords: ActionHandler = {
       })
 
       const items = res.data?.items || []
-      logger.info('[query-records] 查询到:', items.length, '条记录')
+      log.info('[query-records] 查询到:', items.length, '条记录')
 
       return {
         success: true,
@@ -73,7 +75,7 @@ const queryRecords: ActionHandler = {
         durationMs: Date.now() - startTime
       }
     } catch (error: any) {
-      logger.error('[query-records] 错误:', error?.response?.data || error)
+      log.error('[query-records] 错误:', error?.response?.data || error)
       throw new Error(`Failed to query records: ${error}`)
     }
   }

@@ -1,9 +1,12 @@
 import { ActionHandler, ActionResult } from './registry'
 import client from '../lark'
+import { logger, createLoggerWithTrace } from '../logger'
 
 const sendFeishuMessage: ActionHandler = {
   async execute(params, context): Promise<ActionResult> {
     const { receive_id, receive_id_type, content } = params
+    const traceId = (context as { traceId?: string }).traceId
+    const log = traceId ? createLoggerWithTrace(traceId, 'send-feishu-message.ts') : logger
 
     if (!receive_id || !content) {
       throw new Error('Missing required params: receive_id or content')
@@ -12,7 +15,7 @@ const sendFeishuMessage: ActionHandler = {
     const startTime = Date.now()
 
     try {
-      const res = await client.im.v1.messages.create({
+      const res = await (client as any).im.v1.messages.create({
         body: {
           receive_id_type: receive_id_type || 'open_id',
           receive_id,
@@ -26,6 +29,7 @@ const sendFeishuMessage: ActionHandler = {
         durationMs: Date.now() - startTime
       }
     } catch (error) {
+      log.error('[send-feishu-message] 发送失败:', error)
       throw new Error(`Failed to send Feishu message: ${error}`)
     }
   }

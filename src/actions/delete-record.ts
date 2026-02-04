@@ -1,6 +1,6 @@
 import { ActionHandler, ActionResult } from './registry'
 import client from '../lark'
-import { logger } from '../logger'
+import { logger, createLoggerWithTrace } from '../logger'
 
 function resolveFieldValue(value: unknown): unknown {
   if (typeof value === 'object' && value !== null && 'field' in (value as Record<string, unknown>)) {
@@ -72,12 +72,17 @@ function resolveFilterValue(value: unknown, context: Record<string, unknown>): u
 const deleteRecord: ActionHandler = {
   async execute(params, context): Promise<ActionResult> {
     const { app_token, table_id, record_id, filter_fields } = params
+    const traceId = (context as { traceId?: string }).traceId
+    const log = traceId ? createLoggerWithTrace(traceId, 'delete-record.ts') : logger
 
     let targetRecordId = record_id
 
     // 如果没有直接指定 record_id，但提供了 filter_fields，则先搜索
     if (!targetRecordId && filter_fields && typeof filter_fields === 'object') {
-      logger.info('[delete-record] 未指定 record_id，尝试按条件搜索...')
+      if (!app_token || !table_id) {
+        throw new Error('Missing required params: app_token or table_id')
+      }
+      log.info('[delete-record] 未指定 record_id，尝试按条件搜索...')
 
       // 解析 filter_fields 中的 field 引用
       const resolvedFilters: Record<string, unknown> = {}
@@ -85,16 +90,17 @@ const deleteRecord: ActionHandler = {
         resolvedFilters[key] = resolveFilterValue(value, context)
       }
 
-      logger.info('[delete-record] 解析后的搜索条件:', JSON.stringify(resolvedFilters, null, 2))
+      log.info('[delete-record] 解析后的搜索条件:', JSON.stringify(resolvedFilters, null, 2))
 
       try {
-        const searchConditions = Object.entries(resolvedFilters).map(([field, value]) => ({
-          field_name: field,
-          operator: Array.isArray(value) && value.length > 1 ? 'in' : 'is',
-          value: formatSearchValue(value)
-        }))
+        const searchConditions: Array<{ field_name: string; operator: 'in' | 'is'; value: string[] }> =
+          Object.entries(resolvedFilters).map(([field, value]) => ({
+            field_name: field,
+            operator: Array.isArray(value) && value.length > 1 ? 'in' : 'is',
+            value: formatSearchValue(value)
+          }))
 
-        logger.info('[delete-record] 搜索请求体:', JSON.stringify({
+        log.info('[delete-record] 搜索请求体:', JSON.stringify({
           filter: {
             conjunction: 'and',
             conditions: searchConditions
@@ -114,11 +120,11 @@ const deleteRecord: ActionHandler = {
           }
         })
 
-        logger.info('[delete-record] 搜索响应:', JSON.stringify(searchResult.data?.items || [], null, 2))
+        log.info('[delete-record] 搜索响应:', JSON.stringify(searchResult.data?.items || [], null, 2))
 
         const records = searchResult.data?.items || []
         if (records.length === 0) {
-          logger.info('[delete-record] 未找到匹配记录，跳过删除')
+          log.info('[delete-record] 未找到匹配记录，跳过删除')
           return {
             success: true,
             response: { deleted: false, reason: 'no_matching_record' },
@@ -127,7 +133,7 @@ const deleteRecord: ActionHandler = {
         }
 
         targetRecordId = records[0].record_id
-        logger.info('[delete-record] 找到匹配记录:', targetRecordId)
+        log.info('[delete-record] 找到匹配记录:', targetRecordId)
       } catch (error) {
         throw new Error(`Failed to search records: ${error}`)
       }
