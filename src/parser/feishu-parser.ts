@@ -103,11 +103,12 @@ export class FeishuEventParser implements EventParser {
         const fieldValue = item.field_value
 
         // 如果有 field_identity_value（人员字段），优先使用其中的 user_id.open_id
+        // 飞书 API 要求人员字段格式为: [{ id: { open_id: 'ou_xxx' } }]
         if (fieldIdentityValue?.users && Array.isArray(fieldIdentityValue.users)) {
           const users = fieldIdentityValue.users.map((u: any) => ({
-            id: u.user_id?.open_id || u.user_id?.user_id
+            id: { open_id: u.user_id?.open_id || u.user_id?.user_id }
           }))
-          fields[fieldId] = users.length === 1 ? users[0] : users
+          fields[fieldId] = users.length === 1 ? users : users
         } else if (fieldValue !== undefined && fieldValue !== '') {
           // 普通字段值
           try {
