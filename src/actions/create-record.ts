@@ -4,6 +4,25 @@ import { ActionParams } from '../db/rules'
 import { logger, createLoggerWithTrace } from '../logger'
 import { getSupabase } from '../db/client'
 
+type BitableFieldPayloadValue =
+  | string
+  | number
+  | boolean
+  | string[]
+  | { text?: string; link?: string }
+  | {
+      location?: string
+      pname?: string
+      cityname?: string
+      adname?: string
+      address?: string
+      name?: string
+      full_address?: string
+    }
+  | { id: string }[]
+
+type BitableFieldPayload = Record<string, BitableFieldPayloadValue>
+
 interface ActionContext extends Record<string, unknown> {
   traceId?: string
   field_mappings?: Record<string, string>
@@ -12,11 +31,13 @@ interface ActionContext extends Record<string, unknown> {
 // 根据 table_id 获取字段映射
 async function getFieldMappingsForTable(tableId: string): Promise<Record<string, string>> {
   try {
-    const { data } = await getSupabase()
+    const response = await getSupabase()
       .from('bitables')
       .select('field_mappings')
       .eq('table_id', tableId)
       .single()
+
+    const data = response.data as { field_mappings?: Record<string, string> } | null
 
     return (data?.field_mappings as Record<string, string>) || {}
   } catch {
@@ -30,25 +51,22 @@ const createRecord: ActionHandler = {
     const ctx = context as ActionContext
     const log = ctx.traceId ? createLoggerWithTrace(ctx.traceId, 'create-record.ts') : logger
 
-    log.info('[create-record] context.field_mappings:', JSON.stringify(ctx.field_mappings || {}, null, 2))
-
     if (!app_token || !table_id || !fields) {
       throw new Error('Missing required params: app_token, table_id, or fields')
     }
 
     // 获取目标表的字段映射
     const fieldMappings = await getFieldMappingsForTable(table_id)
-    log.info('[create-record] 目标表字段映射:', JSON.stringify(fieldMappings, null, 2))
 
     // 转换 fields 中的字段 ID 为字段名称
     const fieldsWithNames: Record<string, unknown> = {}
     for (const [fieldId, value] of Object.entries(fields as Record<string, unknown>)) {
+      if (value === null || value === undefined) {
+        continue
+      }
       const fieldName = fieldMappings[fieldId] || fieldId
       fieldsWithNames[fieldName] = value
-      log.info('[create-record] 字段转换:', fieldId, '->', fieldName)
     }
-
-    log.info('[create-record] 转换后 fields:', JSON.stringify(fieldsWithNames, null, 2))
 
     const startTime = Date.now()
 
@@ -62,11 +80,18 @@ const createRecord: ActionHandler = {
           user_id_type: 'open_id'
         },
         data: {
-          fields: fieldsWithNames
+          fields: fieldsWithNames as BitableFieldPayload
         }
       })
 
-      log.info('[create-record] 响应:', JSON.stringify(res, null, 2))
+      if (res?.code && res.code !== 0) {
+        return {
+          success: false,
+          error: res?.msg || 'create_record_failed',
+          response: res as unknown as Record<string, unknown>,
+          durationMs: Date.now() - startTime
+        }
+      }
 
       const recordId = res?.data?.record?.record_id
 

@@ -92,8 +92,6 @@ async function processEvent(rawEvent: any, version: string) {
   // 使用解析器解析飞书事件
   let parsedEvent: ParsedEvent
   try {
-    // 打印原始事件
-    log.info('原始事件:', JSON.stringify(rawEvent, null, 2))
     parsedEvent = parseFeishuEvent(rawEvent)
   } catch (error) {
     log.error('解析事件失败:', error)
@@ -135,16 +133,6 @@ async function processEvent(rawEvent: any, version: string) {
     operator_id: operatorOpenId ? { open_id: operatorOpenId } : undefined,
     record: { fields, beforeFields }
   }
-
-  // 打印变更日志（合并为一条，便于追踪）
-  const eventLog = {
-    event: eventType,
-    recordId,
-    operator: operatorOpenId,
-    before: beforeFields,
-    after: fields
-  }
-  log.info(JSON.stringify(eventLog))
 
   try {
     const matchedRules = await ruleMatcher.match(eventData)
