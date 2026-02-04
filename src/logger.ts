@@ -75,6 +75,13 @@ export function createFeishuLogger(traceId: string) {
   return logger.withTrace(traceId).at('lark.ts')
 }
 
+export function createLoggerWithTrace(traceId: string, caller?: string) {
+  if (caller) {
+    return createLoggerWithCaller(traceId, caller)
+  }
+  return createLogger(traceId)
+}
+
 export const log = logger.info
 
 export function createEventTraceId(): string {

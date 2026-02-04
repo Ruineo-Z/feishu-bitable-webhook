@@ -98,14 +98,25 @@ export class FeishuEventParser implements EventParser {
       if (!values) continue
 
       for (const item of values) {
-        try {
-          if (item.field_value) {
-            fields[item.field_id] = JSON.parse(item.field_value)
-          } else {
-            fields[item.field_id] = null
+        const fieldId = item.field_id
+        const fieldIdentityValue = item.field_identity_value
+        const fieldValue = item.field_value
+
+        // 如果有 field_identity_value（人员字段），优先使用其中的 user_id.open_id
+        if (fieldIdentityValue?.users && Array.isArray(fieldIdentityValue.users)) {
+          const users = fieldIdentityValue.users.map((u: any) => ({
+            id: u.user_id?.open_id || u.user_id?.user_id
+          }))
+          fields[fieldId] = users.length === 1 ? users[0] : users
+        } else if (fieldValue !== undefined && fieldValue !== '') {
+          // 普通字段值
+          try {
+            fields[fieldId] = JSON.parse(fieldValue)
+          } catch {
+            fields[fieldId] = fieldValue
           }
-        } catch {
-          fields[item.field_id] = item.field_value
+        } else {
+          fields[fieldId] = null
         }
       }
     }

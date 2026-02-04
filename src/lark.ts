@@ -92,6 +92,8 @@ async function processEvent(rawEvent: any, version: string) {
   // 使用解析器解析飞书事件
   let parsedEvent: ParsedEvent
   try {
+    // 打印原始事件
+    log.info('原始事件:', JSON.stringify(rawEvent, null, 2))
     parsedEvent = parseFeishuEvent(rawEvent)
   } catch (error) {
     log.error('解析事件失败:', error)
@@ -127,7 +129,7 @@ async function processEvent(rawEvent: any, version: string) {
     file_token: appToken,
     table_id: tableId,
     action_list: [{
-      action: eventType === 'record_created' ? 'add' : eventType === 'record_deleted' ? 'remove' : 'set',
+      action: eventType === 'record_created' ? 'add' : eventType === 'record_deleted' ? 'remove' : eventType,
       record_id: recordId
     }],
     operator_id: operatorOpenId ? { open_id: operatorOpenId } : undefined,
@@ -145,11 +147,6 @@ async function processEvent(rawEvent: any, version: string) {
   log.info(JSON.stringify(eventLog))
 
   try {
-    let fieldMappings: Record<string, string> = {}
-    if (bitable.field_mappings) {
-      fieldMappings = bitable.field_mappings as Record<string, string>
-    }
-
     const matchedRules = await ruleMatcher.match(eventData)
 
     if (matchedRules.length === 0) {
@@ -159,6 +156,9 @@ async function processEvent(rawEvent: any, version: string) {
 
     log.info('匹配规则: ' + matchedRules.map(r => r.rule.name).join(', '))
 
+    // 传递字段映射到 context
+    const fieldMappings = bitable.field_mappings as Record<string, string> || {}
+
     for (const { rule, recordId, matchedActions } of matchedRules) {
       const context = {
         recordId,
@@ -166,6 +166,8 @@ async function processEvent(rawEvent: any, version: string) {
         beforeRecord: beforeFields,
         operatorOpenId: operatorOpenId,
         action: eventData.action_list?.[0]?.action || 'unknown',
+        traceId,  // 传递追踪 ID
+        field_mappings: fieldMappings,  // 传递字段映射
       }
 
       // 执行所有满足条件的动作
