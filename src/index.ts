@@ -6,8 +6,11 @@ import { startEventListener } from './lark'
 import { executionLogsDb } from './db/execution-logs'
 import { bitablesDb } from './db/bitables'
 import client from './lark'
+import workflowApp from './routes/workflow'
 
 const app = new OpenAPIHono()
+
+app.route('/api/workflows', workflowApp)
 
 app.get('/', (c) => {
   return c.text('飞书多维表格 Webhook 服务运行中')
