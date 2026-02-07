@@ -1,5 +1,5 @@
 import { ActionHandler, ActionResult } from './registry'
-import client from '../lark'
+import { client } from '../client'
 import { ActionParams } from '../db/rules'
 import { logger, createLoggerWithTrace } from '../logger'
 import { getSupabase } from '../db/client'

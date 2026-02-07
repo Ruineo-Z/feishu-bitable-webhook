@@ -1,5 +1,5 @@
 import { ActionHandler, ActionResult } from './registry'
-import client from '../lark'
+import { client } from '../client'
 import { logger, createLoggerWithTrace } from '../logger'
 
 function resolveFieldValue(value: unknown): unknown {

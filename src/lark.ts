@@ -1,5 +1,5 @@
-import { config } from 'dotenv'
 import * as Lark from '@larksuiteoapi/node-sdk'
+import { client, wsClient } from './client'
 import { RuleMatcher, EventData, MatchedRule } from './engine'
 import { executeAction, registerActions, executeActionWithTimeout } from './actions'
 import { executionLogsDb, ExecutionLog } from './db/execution-logs'
@@ -7,26 +7,19 @@ import { bitablesDb } from './db/bitables'
 import { logger, createEventTraceId, createFeishuLogger } from './logger'
 import { parseFeishuEvent, ParsedEvent } from './parser'
 import { getSupabase } from './db/client'
+import { WorkflowEngine } from './workflow/core/engine'
+import { WorkflowLoader } from './workflow/core/loader'
+import { registerStandardPlugins } from './workflow/plugins'
 
 // 默认动作超时时间（毫秒）
 const ACTION_TIMEOUT_MS = 30000 // 30秒
 
-config()
+// Client initialization moved to ./client.ts
 
-const baseConfig = {
-  appId: process.env.FEISHU_APP_ID || '',
-  appSecret: process.env.FEISHU_APP_SECRET || '',
-}
-
-const client = new Lark.Client({
-  ...baseConfig,
-  loggerLevel: Lark.LoggerLevel.info,
-})
-
-const wsClient = new Lark.WSClient({
-  ...baseConfig,
-  loggerLevel: Lark.LoggerLevel.info,
-})
+// Initialize Workflow Engine
+registerStandardPlugins()
+const workflowEngine = new WorkflowEngine()
+const workflowLoader = WorkflowLoader.getInstance()
 
 const ruleMatcher = new RuleMatcher()
 
@@ -99,6 +92,47 @@ async function processEvent(rawEvent: any, version: string) {
   }
 
   const { eventId, eventType, appToken, tableId, recordId, operatorOpenId, fields, beforeFields } = parsedEvent
+
+  // ==========================================
+  // Workflow Engine Integration (Parallel Run)
+  // ==========================================
+  try {
+    const workflows = await workflowLoader.loadActiveWorkflows()
+    const matchedWorkflows = workflows.filter(wf => {
+      // Basic trigger matching
+      if (wf.trigger.type !== 'lark.bitable.record.changed') return false
+
+      const config = wf.trigger.config as any || {}
+      // If config has app_token, it must match. If not, it matches all (careful with this!)
+      const appTokenMatch = !config.app_token || config.app_token === appToken
+      const tableIdMatch = !config.table_id || config.table_id === tableId
+
+      return appTokenMatch && tableIdMatch
+    })
+
+    if (matchedWorkflows.length > 0) {
+      log.info(`匹配到 ${matchedWorkflows.length} 个新版工作流`)
+      const triggerContext = {
+        record_id: recordId,
+        app_token: appToken,
+        table_id: tableId,
+        record: { fields, beforeFields },
+        action_list: [{ action: eventType === 'record_created' ? 'add' : eventType === 'record_deleted' ? 'remove' : eventType }],
+        operator_id: { open_id: operatorOpenId },
+        traceId
+      }
+
+      // Execute workflows
+      matchedWorkflows.forEach(wf => {
+        workflowEngine.execute(wf, triggerContext).catch(e => {
+          log.error(`工作流 ${wf.name} 执行异常:`, e)
+        })
+      })
+    }
+  } catch (error) {
+    log.error('工作流引擎处理异常:', error)
+  }
+  // ==========================================
 
   // 检查多维表格是否已配置
   const bitable = await bitablesDb.findByTable(appToken, tableId)
@@ -343,4 +377,5 @@ export const startEventListener = async () => {
   }
 }
 
-export default client
+// Removed export default client since it's now imported from ./client
+// Use named export if needed, or import directly from client.ts in other files
