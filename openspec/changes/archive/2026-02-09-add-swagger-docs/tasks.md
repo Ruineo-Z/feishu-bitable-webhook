@@ -16,6 +16,6 @@
 
 ## Phase 3: Verification
 
-- [ ] **Manual Check**
-  - Start server and verify `/docs` loads correctly.
-  - Verify `/doc` returns valid JSON.
+- [x] **Manual Check**
+  - Start server and verify `/docs` loads correctly. (HTTP 200)
+  - Verify `/doc` returns valid JSON. (HTTP 200, OpenAPI 3.0.0)

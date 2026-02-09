@@ -1,11 +1,21 @@
 import { getSupabase } from './client';
 import { WorkflowConfig } from '../workflow/types';
+import {
+  WorkflowScopeInput,
+  WorkflowScopeType,
+  WorkflowScopeDbFields,
+  matchLegacyWorkflowByTriggerConfig,
+  toDbScopeFields,
+} from '../workflow/scope';
 
 export interface WorkflowRecord {
   id: string;
   name: string;
   config: WorkflowConfig;
   is_active: boolean;
+  scope_type: WorkflowScopeType | null;
+  app_token: string | null;
+  table_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -14,6 +24,9 @@ export interface WorkflowSummaryRecord {
   id: string;
   name: string;
   is_active: boolean;
+  scope_type: WorkflowScopeType | null;
+  app_token: string | null;
+  table_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -24,9 +37,59 @@ export interface WorkflowFilter {
   offset?: number;
 }
 
+export type WorkflowMatchSource = 'table' | 'global' | 'legacy-fallback';
+
+export interface WorkflowCandidate {
+  workflow: WorkflowRecord;
+  source: WorkflowMatchSource;
+}
+
+export interface WorkflowCandidateBuildInput {
+  tableScoped: WorkflowRecord[];
+  globalScoped: WorkflowRecord[];
+  legacyScoped: WorkflowRecord[];
+  appToken: string;
+  tableId: string;
+}
+
+export function buildScopedWorkflowCandidates(input: WorkflowCandidateBuildInput): WorkflowCandidate[] {
+  const tableCandidates = input.tableScoped.map((workflow) => ({
+    workflow,
+    source: 'table' as const,
+  }));
+
+  const globalCandidates = input.globalScoped.map((workflow) => ({
+    workflow,
+    source: 'global' as const,
+  }));
+
+  const legacyCandidates = input.legacyScoped
+    .filter((workflow) => matchLegacyWorkflowByTriggerConfig(workflow.config, input.appToken, input.tableId))
+    .map((workflow) => ({
+      workflow,
+      source: 'legacy-fallback' as const,
+    }));
+
+  return [...tableCandidates, ...globalCandidates, ...legacyCandidates];
+}
+
+export function summarizeWorkflowCandidateSources(candidates: WorkflowCandidate[]): Record<WorkflowMatchSource, number> {
+  return candidates.reduce(
+    (acc, candidate) => {
+      acc[candidate.source] += 1;
+      return acc;
+    },
+    {
+      table: 0,
+      global: 0,
+      'legacy-fallback': 0,
+    } as Record<WorkflowMatchSource, number>,
+  );
+}
+
 export const workflowsDb = {
   /**
-   * Fetch all active workflows (internal use for engine)
+   * Fetch all active workflows (legacy internal use)
    */
   async findActive(): Promise<WorkflowConfig[]> {
     const { data, error } = await getSupabase()
@@ -48,19 +111,16 @@ export const workflowsDb = {
   async findAll(filter: WorkflowFilter = {}): Promise<{ data: WorkflowSummaryRecord[]; total: number }> {
     let query = getSupabase()
       .from('workflows')
-      .select('id,name,is_active,created_at,updated_at', { count: 'exact' });
+      .select('id,name,is_active,scope_type,app_token,table_id,created_at,updated_at', { count: 'exact' });
 
     if (filter.isActive !== undefined) {
       query = query.eq('is_active', filter.isActive);
     }
 
-    // Handle pagination range
     const limit = filter.limit || 50;
     const offset = filter.offset || 0;
 
     query = query.range(offset, offset + limit - 1);
-
-    // Default sort by created_at desc
     query = query.order('created_at', { ascending: false });
 
     const { data, error, count } = await query;
@@ -69,7 +129,7 @@ export const workflowsDb = {
 
     return {
       data: (data || []) as WorkflowSummaryRecord[],
-      total: count || 0
+      total: count || 0,
     };
   },
 
@@ -84,22 +144,70 @@ export const workflowsDb = {
       .single();
 
     if (error) {
-        if (error.code === 'PGRST116') return null; // Not found
-        throw error;
+      if (error.code === 'PGRST116') return null;
+      throw error;
     }
     return data as WorkflowRecord;
   },
 
   /**
+   * Find event candidates by table scope + global scope + legacy fallback
+   */
+  async findCandidatesByScope(appToken: string, tableId: string): Promise<WorkflowCandidate[]> {
+    const [tableScopedResult, globalScopedResult, legacyScopedResult] = await Promise.all([
+      getSupabase()
+        .from('workflows')
+        .select('*')
+        .eq('is_active', true)
+        .eq('scope_type', 'table')
+        .eq('app_token', appToken)
+        .eq('table_id', tableId)
+        .order('created_at', { ascending: true }),
+      getSupabase()
+        .from('workflows')
+        .select('*')
+        .eq('is_active', true)
+        .eq('scope_type', 'global')
+        .order('created_at', { ascending: true }),
+      getSupabase()
+        .from('workflows')
+        .select('*')
+        .eq('is_active', true)
+        .is('scope_type', null)
+        .order('created_at', { ascending: true }),
+    ]);
+
+    if (tableScopedResult.error) throw tableScopedResult.error;
+    if (globalScopedResult.error) throw globalScopedResult.error;
+    if (legacyScopedResult.error) throw legacyScopedResult.error;
+
+    return buildScopedWorkflowCandidates({
+      tableScoped: (tableScopedResult.data || []) as WorkflowRecord[],
+      globalScoped: (globalScopedResult.data || []) as WorkflowRecord[],
+      legacyScoped: (legacyScopedResult.data || []) as WorkflowRecord[],
+      appToken,
+      tableId,
+    });
+  },
+
+  /**
    * Create a new workflow
    */
-  async create(name: string, config: WorkflowConfig, isActive = true): Promise<WorkflowRecord> {
+  async create(
+    name: string,
+    config: WorkflowConfig,
+    isActive = true,
+    scope: WorkflowScopeInput,
+  ): Promise<WorkflowRecord> {
+    const scopeFields = toDbScopeFields(scope);
+
     const { data, error } = await getSupabase()
       .from('workflows')
       .insert({
         name,
         config,
-        is_active: isActive
+        is_active: isActive,
+        ...scopeFields,
       })
       .select()
       .single();
@@ -111,7 +219,15 @@ export const workflowsDb = {
   /**
    * Update a workflow
    */
-  async update(id: string, updates: Partial<Pick<WorkflowRecord, 'name' | 'config' | 'is_active'>>): Promise<WorkflowRecord | null> {
+  async update(
+    id: string,
+    updates: Partial<
+      Pick<
+        WorkflowRecord,
+        'name' | 'config' | 'is_active' | 'scope_type' | 'app_token' | 'table_id'
+      >
+    >,
+  ): Promise<WorkflowRecord | null> {
     const { data, error } = await getSupabase()
       .from('workflows')
       .update(updates)
@@ -120,8 +236,8 @@ export const workflowsDb = {
       .single();
 
     if (error) {
-        if (error.code === 'PGRST116') return null;
-        throw error;
+      if (error.code === 'PGRST116') return null;
+      throw error;
     }
     return data as WorkflowRecord;
   },
@@ -130,12 +246,14 @@ export const workflowsDb = {
    * Delete a workflow
    */
   async delete(id: string): Promise<boolean> {
-    const { error } = await getSupabase()
+    const { data, error } = await getSupabase()
       .from('workflows')
       .delete()
-      .eq('id', id);
+      .eq('id', id)
+      .select('id')
+      .maybeSingle();
 
     if (error) throw error;
-    return true;
-  }
+    return !!data;
+  },
 };

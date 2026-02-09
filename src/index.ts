@@ -8,11 +8,13 @@ import { executionLogsDb } from './db/execution-logs'
 import { bitablesDb } from './db/bitables'
 import { client } from './client'
 import registerWorkflowRoutes from './routes/workflow'
+import registerWorkflowUiRoutes from './routes/workflow-ui'
 import { ok, err } from './http/response'
 
 const app = new OpenAPIHono()
 
 registerWorkflowRoutes(app)
+registerWorkflowUiRoutes(app)
 
 app.doc('/doc', {
   openapi: '3.0.0',

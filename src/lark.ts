@@ -8,8 +8,8 @@ import { logger, createEventTraceId, createFeishuLogger } from './logger'
 import { parseFeishuEvent, ParsedEvent } from './parser'
 import { getSupabase } from './db/client'
 import { WorkflowEngine } from './workflow/core/engine'
-import { WorkflowLoader } from './workflow/core/loader'
 import { registerStandardPlugins } from './workflow/plugins'
+import { workflowsDb, summarizeWorkflowCandidateSources } from './db/workflows'
 
 // 默认动作超时时间（毫秒）
 const ACTION_TIMEOUT_MS = 30000 // 30秒
@@ -19,7 +19,6 @@ const ACTION_TIMEOUT_MS = 30000 // 30秒
 // Initialize Workflow Engine
 registerStandardPlugins()
 const workflowEngine = new WorkflowEngine()
-const workflowLoader = WorkflowLoader.getInstance()
 
 const ruleMatcher = new RuleMatcher()
 
@@ -93,41 +92,39 @@ async function processEvent(rawEvent: any, version: string) {
 
   const { eventId, eventType, appToken, tableId, recordId, operatorOpenId, fields, beforeFields } = parsedEvent
 
+
   // ==========================================
-  // Workflow Engine Integration (Parallel Run)
+  // Workflow Engine Integration (Scope Routing)
   // ==========================================
   try {
-    const workflows = await workflowLoader.loadActiveWorkflows()
-    const matchedWorkflows = workflows.filter(wf => {
-      // Basic trigger matching
-      if (wf.trigger.type !== 'lark.bitable.record.changed') return false
+    const workflowCandidates = await workflowsDb.findCandidatesByScope(appToken, tableId)
+    const sourceStats = summarizeWorkflowCandidateSources(workflowCandidates)
 
-      const config = wf.trigger.config as any || {}
-      // If config has app_token, it must match. If not, it matches all (careful with this!)
-      const appTokenMatch = !config.app_token || config.app_token === appToken
-      const tableIdMatch = !config.table_id || config.table_id === tableId
+    if (workflowCandidates.length > 0) {
+      log.info(`匹配到 ${workflowCandidates.length} 个新版工作流`, sourceStats)
 
-      return appTokenMatch && tableIdMatch
-    })
+      if (sourceStats['legacy-fallback'] > 0) {
+        log.warn(`命中 ${sourceStats['legacy-fallback']} 个兼容兜底工作流，请尽快补齐 scope 字段`)
+      }
 
-    if (matchedWorkflows.length > 0) {
-      log.info(`匹配到 ${matchedWorkflows.length} 个新版工作流`)
+      const triggerAction = eventType === 'record_created' ? 'add' : eventType === 'record_deleted' ? 'remove' : eventType
       const triggerContext = {
         record_id: recordId,
         app_token: appToken,
         table_id: tableId,
         record: { fields, beforeFields },
-        action_list: [{ action: eventType === 'record_created' ? 'add' : eventType === 'record_deleted' ? 'remove' : eventType }],
+        action_list: [{ action: triggerAction }],
         operator_id: { open_id: operatorOpenId },
         traceId
       }
 
-      // Execute workflows
-      matchedWorkflows.forEach(wf => {
-        workflowEngine.execute(wf, triggerContext).catch(e => {
-          log.error(`工作流 ${wf.name} 执行异常:`, e)
+      workflowCandidates.forEach(({ workflow, source }) => {
+        workflowEngine.execute(workflow.config, triggerContext).catch(e => {
+          log.error(`工作流 ${workflow.name} (${source}) 执行异常:`, e)
         })
       })
+    } else {
+      log.info('未命中新版工作流')
     }
   } catch (error) {
     log.error('工作流引擎处理异常:', error)

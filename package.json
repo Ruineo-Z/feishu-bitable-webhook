@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "bun --watch start-local.mjs",
     "start": "bun start-local.mjs",
-    "build": "tsup"
+    "build": "tsup",
+    "backfill:workflow-scope": "bun scripts/backfill-workflow-scope.ts"
   },
   "dependencies": {
     "@hono/swagger-ui": "^0.4.0",

@@ -76,6 +76,18 @@ SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 
 启动服务后访问：http://localhost:3000/docs
 
+
+### Workflow 管理页面
+
+启动服务后访问：http://localhost:3000/ui/workflows
+
+页面能力：
+- 查询工作流列表（分页、状态筛选）
+- 创建工作流（含 `scope` 与 JSON DSL 校验）
+- 编辑工作流（先拉取详情再更新）
+- 删除工作流（确认后执行）
+
+
 ## Database Schema
 
 ### bitables 表
