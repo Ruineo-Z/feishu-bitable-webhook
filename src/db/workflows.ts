@@ -10,6 +10,14 @@ export interface WorkflowRecord {
   updated_at: string;
 }
 
+export interface WorkflowSummaryRecord {
+  id: string;
+  name: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface WorkflowFilter {
   isActive?: boolean;
   limit?: number;
@@ -37,10 +45,10 @@ export const workflowsDb = {
   /**
    * Find workflows with pagination and filtering
    */
-  async findAll(filter: WorkflowFilter = {}): Promise<{ data: WorkflowRecord[]; total: number }> {
+  async findAll(filter: WorkflowFilter = {}): Promise<{ data: WorkflowSummaryRecord[]; total: number }> {
     let query = getSupabase()
       .from('workflows')
-      .select('*', { count: 'exact' });
+      .select('id,name,is_active,created_at,updated_at', { count: 'exact' });
 
     if (filter.isActive !== undefined) {
       query = query.eq('is_active', filter.isActive);
@@ -60,7 +68,7 @@ export const workflowsDb = {
     if (error) throw error;
 
     return {
-      data: (data || []) as WorkflowRecord[],
+      data: (data || []) as WorkflowSummaryRecord[],
       total: count || 0
     };
   },

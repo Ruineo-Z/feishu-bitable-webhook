@@ -42,7 +42,12 @@ export class EventRouter {
       return []
     }
 
-    const rules = await rulesDb.findByBitable(bitableConfig.id)
+    const bitableId = bitableConfig.id
+    if (!bitableId) {
+      return []
+    }
+
+    const rules = await rulesDb.findByBitable(bitableId)
     const matchedRules: MatchedRule[] = []
 
     for (const rule of rules) {

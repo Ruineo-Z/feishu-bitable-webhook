@@ -1,22 +1,8 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
-type Database = {
-  public: {
-    Tables: Record<string, {
-      Row: Record<string, unknown>
-      Insert: Record<string, unknown>
-      Update: Record<string, unknown>
-    }>
-    Views: Record<string, never>
-    Functions: Record<string, never>
-    Enums: Record<string, never>
-    CompositeTypes: Record<string, never>
-  }
-}
+let _supabase: SupabaseClient | null = null
 
-let _supabase: ReturnType<typeof createClient<Database>> | null = null
-
-export function getSupabase() {
+export function getSupabase(): SupabaseClient {
   if (_supabase) {
     return _supabase
   }
@@ -28,6 +14,6 @@ export function getSupabase() {
     throw new Error('Missing SUPABASE_URL or SUPABASE_KEY environment variable')
   }
 
-  _supabase = createClient<Database>(supabaseUrl, supabaseKey)
+  _supabase = createClient(supabaseUrl, supabaseKey)
   return _supabase
 }

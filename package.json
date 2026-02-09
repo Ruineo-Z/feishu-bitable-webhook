@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
+    "dev": "bun --watch start-local.mjs",
+    "start": "bun start-local.mjs",
     "build": "tsup"
   },
   "dependencies": {
