@@ -1,36 +1,50 @@
-import { IWorkflowPlugin, WorkflowContext, StepResult } from '../types';
-import { client } from '../../client';
+import { IWorkflowPlugin, WorkflowContext, StepResult } from '../types'
+import { client } from '../../client'
+import { okStep, errStep } from './step-result'
 
 export class FeishuMessagePlugin implements IWorkflowPlugin {
   async execute(context: WorkflowContext, config: Record<string, unknown>): Promise<StepResult> {
-    const { receive_id, receive_id_type, content } = config;
+    const startTime = Date.now()
+    const { receive_id, receive_id_type, content } = config
 
     if (!receive_id || !content) {
-      return {
-        success: false,
-        error: 'Missing required config: receive_id or content'
-      };
+      return errStep(
+        'VALIDATION_ERROR',
+        'Missing required config: receive_id or content',
+        Date.now() - startTime,
+      )
     }
 
     try {
-      // Cast client to any to avoid strict typing issues with the SDK
       const res = await (client as any).im.v1.messages.create({
         body: {
           receive_id_type: receive_id_type || 'open_id',
           receive_id,
-          content
-        }
-      });
+          content,
+        },
+      })
 
-      return {
-        success: true,
-        output: { messageId: res.data?.message_id }
-      };
+      if (res?.code && res.code !== 0) {
+        return errStep(
+          'FEISHU_API_ERROR',
+          res?.msg || 'Failed to send Feishu message',
+          Date.now() - startTime,
+          res,
+        )
+      }
+
+      return okStep(
+        {
+          messageId: res?.data?.message_id,
+        },
+        Date.now() - startTime,
+      )
     } catch (error: any) {
-      return {
-        success: false,
-        error: `Failed to send Feishu message: ${error.message || error}`
-      };
+      return errStep(
+        'PLUGIN_ERROR',
+        `Failed to send Feishu message: ${error.message || error}`,
+        Date.now() - startTime,
+      )
     }
   }
 }

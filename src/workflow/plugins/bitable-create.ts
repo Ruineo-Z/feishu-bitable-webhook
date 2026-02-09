@@ -3,15 +3,15 @@ import { client } from '../../client'
 import { loadFieldResolverMaps, resolveFieldObjectKeys } from './field-mapping-resolver'
 import { okStep, errStep } from './step-result'
 
-export class BitableUpdatePlugin implements IWorkflowPlugin {
+export class BitableCreatePlugin implements IWorkflowPlugin {
   async execute(context: WorkflowContext, config: Record<string, unknown>): Promise<StepResult> {
     const startTime = Date.now()
-    const { app_token, table_id, record_id, fields } = config
+    const { app_token, table_id, fields } = config
 
-    if (!app_token || !table_id || !record_id || !fields || typeof fields !== 'object') {
+    if (!app_token || !table_id || !fields || typeof fields !== 'object') {
       return errStep(
         'VALIDATION_ERROR',
-        'Missing required config: app_token, table_id, record_id, or fields',
+        'Missing required config: app_token, table_id, or fields',
         Date.now() - startTime,
       )
     }
@@ -32,11 +32,13 @@ export class BitableUpdatePlugin implements IWorkflowPlugin {
         )
       }
 
-      const res = await (client as any).bitable.v1.appTableRecord.update({
+      const res = await (client as any).bitable.v1.appTableRecord.create({
         path: {
           app_token,
           table_id,
-          record_id,
+        },
+        params: {
+          user_id_type: 'open_id',
         },
         data: {
           fields: resolvedFields,
@@ -46,22 +48,24 @@ export class BitableUpdatePlugin implements IWorkflowPlugin {
       if (res?.code && res.code !== 0) {
         return errStep(
           'FEISHU_API_ERROR',
-          res?.msg || 'Failed to update record',
+          res?.msg || 'Failed to create record',
           Date.now() - startTime,
           res,
         )
       }
 
+      const recordId = res?.data?.record?.record_id
+
       return okStep(
         {
-          recordId: String(record_id),
+          recordId,
         },
         Date.now() - startTime,
       )
     } catch (error: any) {
       return errStep(
         'PLUGIN_ERROR',
-        `Failed to update record: ${error.message || error}`,
+        `Failed to create record: ${error.message || error}`,
         Date.now() - startTime,
       )
     }

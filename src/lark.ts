@@ -1,35 +1,31 @@
 import * as Lark from '@larksuiteoapi/node-sdk'
-import { client, wsClient } from './client'
-import { RuleMatcher, EventData, MatchedRule } from './engine'
-import { executeAction, registerActions, executeActionWithTimeout } from './actions'
-import { executionLogsDb, ExecutionLog } from './db/execution-logs'
+import { wsClient } from './client'
+import { RuleMatcher, EventData } from './engine'
+import { registerActions, executeActionWithTimeout } from './actions'
+import { ExecutionLog } from './db/execution-logs'
 import { bitablesDb } from './db/bitables'
-import { logger, createEventTraceId, createFeishuLogger } from './logger'
+import { fieldMappingsDb } from './db/field-mappings'
+import { createEventTraceId, createFeishuLogger } from './logger'
 import { parseFeishuEvent, ParsedEvent } from './parser'
 import { getSupabase } from './db/client'
 import { WorkflowEngine } from './workflow/core/engine'
 import { registerStandardPlugins } from './workflow/plugins'
 import { workflowsDb, summarizeWorkflowCandidateSources } from './db/workflows'
 
-// 默认动作超时时间（毫秒）
-const ACTION_TIMEOUT_MS = 30000 // 30秒
+const ACTION_TIMEOUT_MS = 30000
+const LEGACY_RULES_REALTIME_ENABLED = process.env.LEGACY_RULES_REALTIME_ENABLED === 'true'
 
-// Client initialization moved to ./client.ts
-
-// Initialize Workflow Engine
 registerStandardPlugins()
 const workflowEngine = new WorkflowEngine()
-
 const ruleMatcher = new RuleMatcher()
 
 const processedEvents = new Set<string>()
 const PROCESSED_EVENTS_TTL = 60 * 60 * 1000
 const eventTimestamps = new Map<string, number>()
 
-// ============ 异步日志队列 ============
 const logQueue: ExecutionLog[] = []
 const LOG_QUEUE_MAX_SIZE = 1000
-const LOG_FLUSH_INTERVAL = 5000 // 5秒批量写入
+const LOG_FLUSH_INTERVAL = 5000
 
 async function flushExecutionLogs(): Promise<void> {
   if (logQueue.length === 0) return
@@ -51,37 +47,146 @@ async function flushExecutionLogs(): Promise<void> {
 }
 
 function queueExecutionLog(executionLog: Omit<ExecutionLog, 'id' | 'created_at'>): void {
-  // 超过最大队列大小时，移除最旧的日志
   if (logQueue.length >= LOG_QUEUE_MAX_SIZE) {
     logQueue.shift()
   }
   logQueue.push(executionLog as ExecutionLog)
 }
 
-// 启动日志批量写入定时器
 setInterval(flushExecutionLogs, LOG_FLUSH_INTERVAL)
 
 function logExecution(executionLog: Omit<ExecutionLog, 'id' | 'created_at'>): void {
-  // 异步写入，不阻塞主流程
   queueExecutionLog(executionLog)
 }
 
-async function validateConnections(): Promise<void> {
-  const log = createFeishuLogger('INIT')
-  log.info('验证多维表格连接配置...')
-  const bitables = await bitablesDb.findAll()
-  log.info(`已配置 ${bitables.length} 个多维表格`)
-  for (const bitable of bitables) {
-    log.info(`- ${bitable.name}: ${bitable.app_token}`)
+function clearExpiredProcessedEvents(): void {
+  const now = Date.now()
+  for (const [id, ts] of eventTimestamps.entries()) {
+    if (now - ts > PROCESSED_EVENTS_TTL) {
+      processedEvents.delete(id)
+      eventTimestamps.delete(id)
+    }
   }
 }
 
-async function processEvent(rawEvent: any, version: string) {
-  // 为每个事件生成追踪 ID
+function normalizeTriggerAction(eventType: ParsedEvent['eventType']): string {
+  if (eventType === 'record_created') return 'add'
+  if (eventType === 'record_deleted') return 'remove'
+  return eventType
+}
+
+async function mapFieldsByName(
+  appToken: string,
+  tableId: string,
+  fieldsById: Record<string, unknown>,
+): Promise<{ mappedFields: Record<string, unknown>; missingFieldIds: string[] }> {
+  const idToNameMap = await fieldMappingsDb.getIdToNameMap(appToken, tableId)
+  const mappedFields: Record<string, unknown> = {}
+  const missingFieldIds: string[] = []
+
+  for (const [fieldId, value] of Object.entries(fieldsById || {})) {
+    const fieldName = idToNameMap[fieldId]
+    if (fieldName) {
+      mappedFields[fieldName] = value
+      continue
+    }
+
+    mappedFields[fieldId] = value
+    missingFieldIds.push(fieldId)
+  }
+
+  return { mappedFields, missingFieldIds }
+}
+
+function summarizeWorkflowResult(steps: Record<string, { success: boolean; error?: string; output?: unknown }>) {
+  const stepEntries = Object.entries(steps)
+  const failedEntry = stepEntries.find(([, result]) => !result.success)
+
+  if (failedEntry) {
+    return {
+      status: 'failed' as const,
+      errorMessage: failedEntry[1].error || `步骤 ${failedEntry[0]} 执行失败`,
+    }
+  }
+
+  return {
+    status: 'success' as const,
+    errorMessage: null,
+  }
+}
+
+async function executeLegacyRules(
+  parsedEvent: ParsedEvent,
+  traceId: string,
+  log: ReturnType<typeof createFeishuLogger>,
+): Promise<void> {
+  const { appToken, tableId, recordId, operatorOpenId, fields, beforeFields } = parsedEvent
+
+  const bitable = await bitablesDb.findByTable(appToken, tableId)
+  if (!bitable) {
+    log.warn(`[legacy] 未配置 bitable，跳过 rules 执行: app_token=${appToken}, table_id=${tableId}`)
+    return
+  }
+
+  const eventData: EventData = {
+    file_token: appToken,
+    table_id: tableId,
+    action_list: [{
+      action: normalizeTriggerAction(parsedEvent.eventType),
+      record_id: recordId,
+    }],
+    operator_id: operatorOpenId ? { open_id: operatorOpenId } : undefined,
+    record: { fields, beforeFields },
+  }
+
+  const matchedRules = await ruleMatcher.match(eventData)
+  if (matchedRules.length === 0) {
+    log.info('[legacy] 无匹配规则')
+    return
+  }
+
+  log.warn(`[legacy] 启用规则链路，命中 ${matchedRules.length} 条规则`)
+
+  const fieldMappings = bitable.field_mappings as Record<string, string> || {}
+
+  for (const { rule, recordId: matchedRecordId, matchedActions } of matchedRules) {
+    const context = {
+      recordId: matchedRecordId,
+      record: fields,
+      beforeRecord: beforeFields,
+      operatorOpenId,
+      action: eventData.action_list?.[0]?.action || 'unknown',
+      traceId,
+      field_mappings: fieldMappings,
+    }
+
+    for (const ruleAction of matchedActions) {
+      const actionResult = await executeActionWithTimeout(ruleAction.action, context, ACTION_TIMEOUT_MS)
+
+      logExecution({
+        rule_id: rule.id!,
+        rule_name: `${rule.name} - ${ruleAction.name}`,
+        trigger_action: eventData.action_list?.[0]?.action || 'unknown',
+        record_id: matchedRecordId,
+        operator_openid: operatorOpenId || null,
+        record_snapshot: { fields },
+        status: actionResult.success ? 'success' : 'failed',
+        error_message: actionResult.error || null,
+        duration_ms: actionResult.durationMs,
+        response: actionResult.response || null,
+      })
+
+      if (!actionResult.success && rule.on_failure === 'stop') {
+        break
+      }
+    }
+  }
+}
+
+async function processEvent(rawEvent: unknown, version: string) {
   const traceId = createEventTraceId()
   const log = createFeishuLogger(traceId)
 
-  // 使用解析器解析飞书事件
   let parsedEvent: ParsedEvent
   try {
     parsedEvent = parseFeishuEvent(rawEvent)
@@ -90,195 +195,172 @@ async function processEvent(rawEvent: any, version: string) {
     return
   }
 
-  const { eventId, eventType, appToken, tableId, recordId, operatorOpenId, fields, beforeFields } = parsedEvent
+  const {
+    eventId,
+    eventType,
+    appToken,
+    tableId,
+    recordId,
+    operatorOpenId,
+    fields,
+    beforeFields,
+  } = parsedEvent
 
-
-  // ==========================================
-  // Workflow Engine Integration (Scope Routing)
-  // ==========================================
-  try {
-    const workflowCandidates = await workflowsDb.findCandidatesByScope(appToken, tableId)
-    const sourceStats = summarizeWorkflowCandidateSources(workflowCandidates)
-
-    if (workflowCandidates.length > 0) {
-      log.info(`匹配到 ${workflowCandidates.length} 个新版工作流`, sourceStats)
-
-      if (sourceStats['legacy-fallback'] > 0) {
-        log.warn(`命中 ${sourceStats['legacy-fallback']} 个兼容兜底工作流，请尽快补齐 scope 字段`)
-      }
-
-      const triggerAction = eventType === 'record_created' ? 'add' : eventType === 'record_deleted' ? 'remove' : eventType
-      const triggerContext = {
-        record_id: recordId,
-        app_token: appToken,
-        table_id: tableId,
-        record: { fields, beforeFields },
-        action_list: [{ action: triggerAction }],
-        operator_id: { open_id: operatorOpenId },
-        traceId
-      }
-
-      workflowCandidates.forEach(({ workflow, source }) => {
-        workflowEngine.execute(workflow.config, triggerContext).catch(e => {
-          log.error(`工作流 ${workflow.name} (${source}) 执行异常:`, e)
-        })
-      })
-    } else {
-      log.info('未命中新版工作流')
-    }
-  } catch (error) {
-    log.error('工作流引擎处理异常:', error)
-  }
-  // ==========================================
-
-  // 检查多维表格是否已配置
-  const bitable = await bitablesDb.findByTable(appToken, tableId)
-  if (!bitable) {
-    log.warn(`未配置: app_token=${appToken}, table_id=${tableId}`)
-    return
-  }
-
-  const now = Date.now()
-  for (const [id, ts] of eventTimestamps.entries()) {
-    if (now - ts > PROCESSED_EVENTS_TTL) {
-      processedEvents.delete(id)
-      eventTimestamps.delete(id)
-    }
-  }
+  clearExpiredProcessedEvents()
 
   if (eventId && processedEvents.has(eventId)) {
     log.warn(`事件已处理: ${eventId}`)
     return
   }
 
-  log.info(`${bitable.name || appToken}: ${eventType} ${recordId}`)
+  const mappedAfter = await mapFieldsByName(appToken, tableId, fields)
+  const mappedBefore = await mapFieldsByName(appToken, tableId, beforeFields)
 
-  // 构建事件数据（兼容现有 EventData 结构）
-  const eventData: EventData = {
-    file_token: appToken,
-    table_id: tableId,
-    action_list: [{
-      action: eventType === 'record_created' ? 'add' : eventType === 'record_deleted' ? 'remove' : eventType,
-      record_id: recordId
-    }],
-    operator_id: operatorOpenId ? { open_id: operatorOpenId } : undefined,
-    record: { fields, beforeFields }
+  const missingFieldIds = new Set<string>([
+    ...mappedAfter.missingFieldIds,
+    ...mappedBefore.missingFieldIds,
+  ])
+  if (missingFieldIds.size > 0) {
+    log.warn('存在未映射字段 ID，已使用原始字段 ID 作为键:', Array.from(missingFieldIds))
   }
+
+  const triggerAction = normalizeTriggerAction(eventType)
 
   try {
-    const matchedRules = await ruleMatcher.match(eventData)
+    const workflowCandidates = await workflowsDb.findCandidatesByScope(appToken, tableId)
+    const sourceStats = summarizeWorkflowCandidateSources(workflowCandidates)
 
-    if (matchedRules.length === 0) {
-      log.info('无匹配规则')
-      return
-    }
+    if (workflowCandidates.length > 0) {
+      log.info(`匹配到 ${workflowCandidates.length} 个工作流候选`, {
+        sourceStats,
+        eventType,
+        version,
+      })
 
-    log.info('匹配规则: ' + matchedRules.map(r => r.rule.name).join(', '))
-
-    // 传递字段映射到 context
-    const fieldMappings = bitable.field_mappings as Record<string, string> || {}
-
-    for (const { rule, recordId, matchedActions } of matchedRules) {
-      const context = {
-        recordId,
-        record: fields,
-        beforeRecord: beforeFields,
-        operatorOpenId: operatorOpenId,
-        action: eventData.action_list?.[0]?.action || 'unknown',
-        traceId,  // 传递追踪 ID
-        field_mappings: fieldMappings,  // 传递字段映射
+      if (sourceStats['legacy-fallback'] > 0) {
+        log.warn(`命中 ${sourceStats['legacy-fallback']} 个兼容兜底工作流，请尽快补齐 scope 字段`)
       }
 
-      // 执行所有满足条件的动作
-      for (const ruleAction of matchedActions) {
-        log.info(`执行动作: ${rule.name} - ${ruleAction.name}`)
+      const executionResults = await Promise.allSettled(
+        workflowCandidates.map(async ({ workflow, source }) => {
+          const triggerContext = {
+            record_id: recordId,
+            app_token: appToken,
+            table_id: tableId,
+            record: {
+              fields: mappedAfter.mappedFields,
+              fields_by_id: fields,
+              beforeFields: mappedBefore.mappedFields,
+              before_fields_by_id: beforeFields,
+            },
+            action_list: [{ action: triggerAction }],
+            operator_id: operatorOpenId ? { open_id: operatorOpenId } : undefined,
+            traceId,
+          }
 
-        // 使用超时控制执行动作
-        const actionResult = await executeActionWithTimeout(ruleAction.action, context, ACTION_TIMEOUT_MS)
+          const workflowContext = await workflowEngine.execute(workflow.config, triggerContext)
+          const summary = summarizeWorkflowResult(workflowContext.steps as Record<string, { success: boolean; error?: string; output?: unknown }>)
 
-        if (actionResult.success) {
-          log.success(`动作 "${ruleAction.name}" 执行成功`)
-        } else {
-          log.error(`动作 "${ruleAction.name}" 执行失败:`, actionResult.error)
-        }
+          logExecution({
+            rule_id: workflow.id,
+            rule_name: `workflow:${workflow.name}`,
+            trigger_action: triggerAction,
+            record_id: recordId,
+            operator_openid: operatorOpenId || null,
+            record_snapshot: {
+              fields: mappedAfter.mappedFields,
+              beforeFields: mappedBefore.mappedFields,
+            },
+            status: summary.status,
+            error_message: summary.errorMessage,
+            duration_ms: null,
+            response: {
+              workflowId: workflow.id,
+              source,
+              steps: workflowContext.steps,
+            },
+          })
 
-        // 异步写入日志，不阻塞主流程
-        logExecution({
-          rule_id: rule.id!,
-          rule_name: `${rule.name} - ${ruleAction.name}`,
-          trigger_action: eventData.action_list?.[0]?.action || 'unknown',
-          record_id: recordId,
-          operator_openid: operatorOpenId || null,
-          record_snapshot: { fields },
-          status: actionResult.success ? 'success' : 'failed',
-          error_message: actionResult.error || null,
-          duration_ms: actionResult.durationMs,
-          response: actionResult.response || null,
-        })
+          return {
+            workflowId: workflow.id,
+            workflowName: workflow.name,
+            source,
+            status: summary.status,
+            error: summary.errorMessage,
+          }
+        }),
+      )
 
-        if (!actionResult.success && rule.on_failure === 'stop') {
-          break
-        }
+      const failedExecutions = executionResults.filter((item) => item.status === 'rejected')
+      if (failedExecutions.length > 0) {
+        log.error(`工作流执行阶段发生 ${failedExecutions.length} 个异常`, failedExecutions)
       }
+    } else {
+      log.info('未命中任何工作流候选')
     }
+  } catch (error) {
+    log.error('工作流引擎处理异常:', error)
+  }
 
-    if (eventId) {
-      processedEvents.add(eventId)
-      eventTimestamps.set(eventId, Date.now())
-    }
+  if (LEGACY_RULES_REALTIME_ENABLED) {
+    try {
+      await executeLegacyRules(parsedEvent, traceId, log)
     } catch (error) {
-      log.error('处理事件失败:', error)
+      log.error('legacy rules 执行异常:', error)
     }
   }
+
+  if (eventId) {
+    processedEvents.add(eventId)
+    eventTimestamps.set(eventId, Date.now())
+  }
+}
 
 async function processFieldChangedEvent(rawEvent: any) {
   const traceId = createEventTraceId()
   const log = createFeishuLogger(traceId)
 
-  const app_token = rawEvent?.file_token
-  const table_id = rawEvent?.table_id
+  const appToken = rawEvent?.file_token
+  const tableId = rawEvent?.table_id
   const actionItem = rawEvent?.action_list?.[0]
-  const field_id = actionItem?.field_id
-  const before_value = actionItem?.before_value
-  const after_value = actionItem?.after_value
+  const fieldId = actionItem?.field_id
+  const beforeValue = actionItem?.before_value
+  const afterValue = actionItem?.after_value
   const action = actionItem?.action
 
   log.info('字段变更解析:', {
-    app_token,
-    table_id,
-    field_id,
-    before: before_value,
-    after: after_value,
-    action
+    appToken,
+    tableId,
+    fieldId,
+    before: beforeValue,
+    after: afterValue,
+    action,
   })
 
-  if (!field_id || !app_token) {
+  if (!fieldId || !appToken || !tableId) {
     log.warn('字段变更事件缺少必要字段')
     return
   }
 
-  try {
-    const bitableConfig = await bitablesDb.findByTable(app_token, table_id)
-    if (!bitableConfig) {
-      log.warn(`未配置的表: ${app_token}/${table_id}`)
-      return
-    }
+  const nextFieldName = afterValue?.name || afterValue?.field_name || afterValue?.text
 
+  try {
     switch (action) {
       case 'add':
       case 'update':
       case 'field_edited':
       case 'field_added':
-        // 字段编辑或新增/更新，需要更新映射
-        if (after_value?.name) {
-          await bitablesDb.addFieldMapping(bitableConfig.id!, field_id, after_value.name)
-          log.info(`更新字段映射: ${field_id} (${before_value?.name || '?'} -> ${after_value.name})`)
+        if (typeof nextFieldName === 'string' && nextFieldName.trim().length > 0) {
+          await fieldMappingsDb.upsertOne(appToken, tableId, fieldId, nextFieldName)
+          log.info(`更新字段映射: ${fieldId} (${beforeValue?.name || '?'} -> ${nextFieldName})`)
+        } else {
+          log.warn(`字段变更事件缺少可用字段名，跳过写入: field_id=${fieldId}`)
         }
         break
       case 'delete':
       case 'field_deleted':
-        await bitablesDb.removeFieldMapping(bitableConfig.id!, field_id)
-        log.info(`删除字段映射: ${field_id} (${before_value?.name || field_id})`)
+        await fieldMappingsDb.removeByFieldId(appToken, tableId, fieldId)
+        log.info(`删除字段映射: ${fieldId}`)
         break
       default:
         log.warn(`未知的字段变更动作: ${action}`)
@@ -288,61 +370,15 @@ async function processFieldChangedEvent(rawEvent: any) {
   }
 }
 
-async function initializeFieldMappings(bitable: any): Promise<void> {
-  const log = createFeishuLogger('INIT')
-  if (bitable.field_mappings && Object.keys(bitable.field_mappings).length > 0) {
-    log.info(`${bitable.name} (${bitable.table_id}) 已存在字段映射，跳过初始化`)
-    return
-  }
-
-  log.info(`正在初始化 ${bitable.name} (${bitable.table_id}) 的字段映射...`)
-
-  try {
-    const res = await client.bitable.v1.appTableField.list({
-      path: { app_token: bitable.app_token, table_id: bitable.table_id }
-    })
-
-    const fields = res.data?.items || []
-    const mappings: Record<string, string> = {}
-
-    for (const field of fields) {
-      mappings[field.field_id!] = field.field_name!
-    }
-
-    // 更新到数据库
-    const updates: any = {
-      field_mappings: mappings,
-      updated_at: new Date().toISOString()
-    }
-
-    // 如果没有表名，使用多维表格名称作为默认
-    if (!bitable.table_name && bitable.name) {
-      updates.table_name = bitable.name
-    }
-
-    const { error } = await getSupabase()
-      .from('bitables')
-      .update(updates)
-      .eq('id', bitable.id)
-
-    if (error) throw error
-
-    log.info(`初始化字段映射成功: ${fields.length} 个字段`)
-  } catch (error) {
-    log.error(`初始化字段映射失败:`, error)
-  }
-}
-
 export const startEventListener = async () => {
   const log = createFeishuLogger('START')
-  try {
-    registerActions()
-    await validateConnections()
 
-    // 初始化所有已配置多维表格的字段映射
-    const bitables = await bitablesDb.findAll()
-    for (const bitable of bitables) {
-      await initializeFieldMappings(bitable)
+  try {
+    if (LEGACY_RULES_REALTIME_ENABLED) {
+      log.warn('LEGACY_RULES_REALTIME_ENABLED=true，旧 rules 链路将参与 realtime 处理（回滚模式）')
+      registerActions()
+    } else {
+      log.info('workflow-only 模式已启用，旧 rules realtime 链路已关闭')
     }
 
     log.info('正在启动长连接...')
@@ -350,17 +386,17 @@ export const startEventListener = async () => {
     wsClient.start({
       eventDispatcher: new Lark.EventDispatcher({}).register({
         'drive.file.bitable_record_changed_v1': async (data: any) => {
-          processEvent(data, 'v1').catch(err => {
+          processEvent(data, 'v1').catch((err) => {
             log.error('v1 事件异步处理失败:', err)
           })
         },
         'drive.file.bitable_record_changed_v2': async (data: any) => {
-          processEvent(data, 'v2').catch(err => {
+          processEvent(data, 'v2').catch((err) => {
             log.error('v2 事件异步处理失败:', err)
           })
         },
         'drive.file.bitable_field_changed_v1': async (data: any) => {
-          processFieldChangedEvent(data).catch(err => {
+          processFieldChangedEvent(data).catch((err) => {
             log.error('字段变更事件处理失败:', err)
           })
         },
@@ -373,6 +409,3 @@ export const startEventListener = async () => {
     throw error
   }
 }
-
-// Removed export default client since it's now imported from ./client
-// Use named export if needed, or import directly from client.ts in other files

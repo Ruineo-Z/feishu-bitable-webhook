@@ -6,7 +6,8 @@ import { swaggerUI } from '@hono/swagger-ui'
 import { startEventListener } from './lark'
 import { executionLogsDb } from './db/execution-logs'
 import { bitablesDb } from './db/bitables'
-import { client } from './client'
+import { fieldMappingsDb } from './db/field-mappings'
+import { refreshFieldMappingsByTable } from './services/field-mappings'
 import registerWorkflowRoutes from './routes/workflow'
 import registerWorkflowUiRoutes from './routes/workflow-ui'
 import { ok, err } from './http/response'
@@ -21,13 +22,12 @@ app.doc('/doc', {
   info: {
     version: '1.0.0',
     title: 'Feishu Bitable Webhook API',
-    description: 'API documentation for the User-Defined Workflow Engine',
+    description: 'API documentation for the workflow-only runtime with field mapping registry.',
   },
 })
 
 app.get('/docs', swaggerUI({ url: '/doc' }))
 
-// Debug: Print all registered routes
 app.routes.forEach(r => {
   console.log(`[ROUTE] ${r.method} ${r.path}`)
 })
@@ -37,7 +37,7 @@ app.get('/', (c) => {
 })
 
 const LogsQuerySchema = z.object({
-  ruleId: z.string().optional().describe('按规则 ID 过滤'),
+  ruleId: z.string().optional().describe('按规则 ID 过滤；workflow-only 模式下可为空'),
   status: z.enum(['success', 'failed', 'partial']).optional().describe('按执行状态过滤'),
   operatorOpenId: z.string().optional().describe('按操作人 Open ID 过滤'),
   startDate: z.string().optional().describe('开始时间（ISO 8601）'),
@@ -100,11 +100,33 @@ const DeleteSuccessSchema = z.object({
   data: z.object({ id: z.string() }),
 })
 
-const RefreshFieldsSuccessSchema = z.object({
+const MappingListQuerySchema = z.object({
+  appToken: z.string().min(1).describe('多维表格 app_token'),
+  tableId: z.string().min(1).describe('数据表 table_id'),
+})
+
+const MappingRefreshSchema = z.object({
+  appToken: z.string().min(1).describe('多维表格 app_token'),
+  tableId: z.string().min(1).describe('数据表 table_id'),
+})
+
+const MappingListSuccessSchema = z.object({
   code: z.literal('OK'),
   message: z.string(),
   data: z.object({
-    success: z.boolean(),
+    appToken: z.string(),
+    tableId: z.string(),
+    fieldsCount: z.number(),
+    mappings: z.record(z.string()),
+  }),
+})
+
+const MappingRefreshSuccessSchema = z.object({
+  code: z.literal('OK'),
+  message: z.string(),
+  data: z.object({
+    appToken: z.string(),
+    tableId: z.string(),
     fieldsCount: z.number(),
     mappings: z.record(z.string()),
   }),
@@ -265,8 +287,104 @@ app.openapi(
   }) as any
 )
 
-const RefreshFieldsSchema = z.object({
-  id: z.string().describe('多维表格配置 ID'),
+app.openapi(
+  createRoute({
+    method: 'get',
+    path: '/api/mappings',
+    tags: ['FieldMappings'],
+    summary: '查询字段映射',
+    description: '按 app_token + table_id 查询字段映射 registry（workflow-only 推荐接口）。',
+    request: {
+      query: MappingListQuerySchema,
+    },
+    responses: {
+      200: {
+        description: '查询成功',
+        content: {
+          'application/json': {
+            schema: MappingListSuccessSchema,
+          },
+        },
+      },
+      500: {
+        description: '查询失败',
+        content: {
+          'application/json': {
+            schema: ErrorEnvelopeSchema,
+          },
+        },
+      },
+    },
+  }),
+  (async (c: any) => {
+    try {
+      const query = c.req.valid('query')
+      const records = await fieldMappingsDb.findByTable(query.appToken, query.tableId)
+      const mappings = records.reduce<Record<string, string>>((acc, record) => {
+        acc[record.field_id] = record.field_name
+        return acc
+      }, {})
+
+      return ok(c, {
+        appToken: query.appToken,
+        tableId: query.tableId,
+        fieldsCount: records.length,
+        mappings,
+      }, '查询字段映射成功')
+    } catch {
+      return err(c, 'FIELD_MAPPING_GET_FAILED', '查询字段映射失败', 500)
+    }
+  }) as any
+)
+
+app.openapi(
+  createRoute({
+    method: 'post',
+    path: '/api/mappings/refresh',
+    tags: ['FieldMappings'],
+    summary: '刷新字段映射',
+    description: '按 app_token + table_id 从飞书拉取最新字段定义并重建 mapping registry。',
+    request: {
+      body: {
+        content: {
+          'application/json': {
+            schema: MappingRefreshSchema,
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: '刷新成功',
+        content: {
+          'application/json': {
+            schema: MappingRefreshSuccessSchema,
+          },
+        },
+      },
+      500: {
+        description: '刷新失败',
+        content: {
+          'application/json': {
+            schema: ErrorEnvelopeSchema,
+          },
+        },
+      },
+    },
+  }),
+  (async (c: any) => {
+    try {
+      const body = c.req.valid('json')
+      const result = await refreshFieldMappingsByTable(body.appToken, body.tableId)
+      return ok(c, result, '刷新字段映射成功')
+    } catch (error) {
+      return err(c, 'FIELD_MAPPING_REFRESH_FAILED', '刷新字段映射失败', 500, error)
+    }
+  }) as any
+)
+
+const LegacyRefreshFieldsSchema = z.object({
+  id: z.string().describe('多维表格配置 ID（旧接口入参）'),
 })
 
 app.openapi(
@@ -274,17 +392,19 @@ app.openapi(
     method: 'post',
     path: '/api/bitables/{id}/refresh-fields',
     tags: ['Bitables'],
-    summary: '刷新多维表格字段映射',
-    description: '根据配置 ID 从飞书拉取最新字段，并更新数据库中的字段映射。',
+    summary: '（已弃用）刷新多维表格字段映射',
+    description:
+      '旧接口：根据 bitable 配置 ID 刷新映射。建议改用 POST /api/mappings/refresh（app_token + table_id）。',
+    deprecated: true,
     request: {
-      params: RefreshFieldsSchema,
+      params: LegacyRefreshFieldsSchema,
     },
     responses: {
       200: {
         description: '刷新成功',
         content: {
           'application/json': {
-            schema: RefreshFieldsSuccessSchema,
+            schema: MappingRefreshSuccessSchema,
           },
         },
       },
@@ -314,28 +434,16 @@ app.openapi(
     }
 
     try {
-      // 从飞书 API 获取最新字段列表
-      const res = await client.bitable.v1.appTableField.list({
-        path: { app_token: bitable.app_token, table_id: bitable.table_id }
+      const result = await refreshFieldMappingsByTable(bitable.app_token, bitable.table_id)
+
+      // 兼容更新旧字段，便于过渡期工具继续工作
+      await bitablesDb.update(id, {
+        field_mappings: result.mappings,
       })
 
-      const fields = res.data?.items || []
-      const mappings: Record<string, string> = {}
-
-      for (const field of fields) {
-        mappings[field.field_id!] = field.field_name!
-      }
-
-      // 更新到数据库
-      await bitablesDb.update(id, { field_mappings: mappings })
-
-      return ok(c, {
-        success: true,
-        fieldsCount: Object.keys(mappings).length,
-        mappings
-      }, '刷新字段映射成功')
+      return ok(c, result, '刷新字段映射成功（旧接口，建议迁移）')
     } catch (error) {
-      return err(c, 'REFRESH_FIELDS_FAILED', '刷新字段映射失败', 500)
+      return err(c, 'REFRESH_FIELDS_FAILED', '刷新字段映射失败', 500, error)
     }
   }) as any
 )

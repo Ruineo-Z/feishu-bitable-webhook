@@ -1,6 +1,6 @@
 # Feishu Bitable Webhook
 
-飞书多维表格自动化引擎，监听多维表格记录变更事件并触发自动化规则。
+飞书多维表格自动化引擎，监听多维表格记录变更事件并触发 **workflow-only** 自动化流程。
 
 ## Tech Stack
 
@@ -13,13 +13,72 @@
 ## Features
 
 - 飞书多维表格 WebSocket 长连接事件监听
-- 基于条件的规则引擎
-- 支持多种动作类型：
-  - 发送飞书消息
-  - HTTP API 调用
-  - 创建/更新/删除记录
+- Workflow scope 路由（table/global）
+- Workflow 插件动作（消息发送 / 记录增删改查）
+- 字段映射 registry（`field_id -> field_name`）
 - 执行日志查询
-- Supabase 数据库持久化
+
+## 后端框架与流程
+
+### 架构总览
+
+```text
+Feishu Bitable Events (WS)
+          │
+          ▼
+   src/lark.ts 事件接入层
+          │
+          ├── workflow 路由与执行
+          │     ├── scope 候选检索（table/global）
+          │     ├── 字段映射转换（field_id -> field_name）
+          │     └── Workflow Engine + Plugins
+          │
+          └── 字段变更事件同步
+                └── bitable_field_mappings registry
+
+HTTP 请求
+  └── src/index.ts (Hono)
+      ├── /api/workflows
+      ├── /api/logs
+      ├── /api/mappings
+      ├── /api/mappings/refresh
+      ├── /api/bitables/{id}/refresh-fields (deprecated)
+      ├── /doc + /docs
+      └── /ui/workflows
+```
+
+### 事件处理主流程
+
+```text
+飞书记录事件 -> parseFeishuEvent -> processEvent
+  1) 按 app_token + table_id 查询字段映射并转换字段键
+  2) 按 scope 查询候选 workflows
+  3) 执行 workflow steps（condition / action.*）
+  4) 异步写 execution_logs
+```
+
+字段变更事件流程：
+
+```text
+飞书字段变更事件 -> processFieldChangedEvent
+  -> upsert/remove bitable_field_mappings
+```
+
+### 启动时序（`bun run dev`）
+
+1. `bun --watch start-local.mjs` 启动开发模式。  
+2. `start-local.mjs` 加载 `src/index.ts` 并启动 `Bun.serve(:3000)`。  
+3. `src/index.ts` 注册 HTTP 路由后调用 `startEventListener()`。  
+4. `startEventListener()` 会：
+   - 注册 workflow 插件；
+   - 启动飞书 WS 长连接并注册事件分发；
+   - 在字段变更事件中持续维护字段映射 registry。
+
+可通过日志快速判断是否启动完整：
+- `[ROUTE] ...`
+- `workflow-only 模式已启用...`
+- `正在启动长连接...`
+- `长连接事件监听已启动`
 
 ## Quick Start
 
@@ -32,10 +91,10 @@ cp .env.example .env
 # 编辑 .env 填入飞书应用凭证和 Supabase 连接信息
 
 # 开发模式
-bun dev
+bun run dev
 
 # 生产模式
-bun start
+bun run start
 ```
 
 ## Configuration
@@ -47,12 +106,15 @@ FEISHU_APP_SECRET=your_app_secret
 
 # Supabase 连接
 SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+SUPABASE_KEY=your_service_role_key
+
+# 可选：回滚开关（true 时启用 legacy rules realtime）
+LEGACY_RULES_REALTIME_ENABLED=false
 ```
 
 ## API Endpoints
 
-### 日志查询
+### 日志
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -60,58 +122,52 @@ SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 | GET | `/api/logs/{id}` | 获取单条日志详情 |
 | DELETE | `/api/logs/{id}` | 删除单条日志 |
 
-### 查询参数 (GET /api/logs)
+### 字段映射（推荐）
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| ruleId | string | 按规则 ID 过滤 |
-| status | string | 按状态过滤 (success/failed/partial) |
-| operatorOpenId | string | 按操作人过滤 |
-| startDate | string | 开始时间 |
-| endDate | string | 结束时间 |
-| limit | number | 返回数量，默认 50 |
-| offset | number | 偏移量，默认 0 |
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/mappings?appToken=...&tableId=...` | 查询字段映射 registry |
+| POST | `/api/mappings/refresh` | 按 `appToken + tableId` 刷新字段映射 |
+
+### 兼容接口（弃用）
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/bitables/{id}/refresh-fields` | 旧映射刷新接口，建议迁移到 `/api/mappings/refresh` |
 
 ### Swagger UI
 
-启动服务后访问：http://localhost:3000/docs
-
+启动服务后访问：`http://localhost:3000/docs`
 
 ### Workflow 管理页面
 
-启动服务后访问：http://localhost:3000/ui/workflows
-
-页面能力：
-- 查询工作流列表（分页、状态筛选）
-- 创建工作流（含 `scope` 与 JSON DSL 校验）
-- 编辑工作流（先拉取详情再更新）
-- 删除工作流（确认后执行）
-
+启动服务后访问：`http://localhost:3000/ui/workflows`
 
 ## Database Schema
 
-### bitables 表
+### workflows 表
 
 | Column | Type | Description |
 |--------|------|-------------|
 | id | uuid | 主键 |
-| app_token | varchar | 飞书多维表格 Token |
-| name | varchar | 名称 |
-| table_ids | jsonb | 关联的表 ID 列表 |
+| name | text | 工作流名称 |
+| config | jsonb | workflow DSL |
+| is_active | boolean | 是否启用 |
+| scope_type | text | 作用域类型（table/global） |
+| app_token | text | table 作用域绑定 app_token |
+| table_id | text | table 作用域绑定 table_id |
 | created_at | timestamptz | 创建时间 |
 | updated_at | timestamptz | 更新时间 |
 
-### rules 表
+### bitable_field_mappings 表
 
 | Column | Type | Description |
 |--------|------|-------------|
 | id | uuid | 主键 |
-| name | varchar | 规则名称 |
-| enabled | boolean | 是否启用 |
-| bitable_id | uuid | 关联的多维表格 ID |
-| trigger | jsonb | 触发器配置 |
-| action | jsonb | 动作配置 |
-| on_failure | varchar | 失败策略 (continue/stop) |
+| app_token | text | 多维表 app_token |
+| table_id | text | 数据表 table_id |
+| field_id | text | 飞书字段 ID |
+| field_name | text | 字段名 |
 | created_at | timestamptz | 创建时间 |
 | updated_at | timestamptz | 更新时间 |
 
@@ -120,13 +176,13 @@ SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 | Column | Type | Description |
 |--------|------|-------------|
 | id | uuid | 主键 |
-| rule_id | uuid | 关联的规则 ID |
-| rule_name | varchar | 规则名称 |
-| trigger_action | varchar | 触发动作 |
-| record_id | varchar | 记录 ID |
-| operator_openid | varchar | 操作人 Open ID |
+| rule_id | uuid/text | 触发主体 ID（规则或工作流） |
+| rule_name | text | 触发主体名称 |
+| trigger_action | text | 触发动作 |
+| record_id | text | 记录 ID |
+| operator_openid | text | 操作人 Open ID |
 | record_snapshot | jsonb | 记录快照 |
-| status | varchar | 状态 (success/failed/partial) |
+| status | text | 状态 (success/failed/partial) |
 | error_message | text | 错误信息 |
 | duration_ms | integer | 执行耗时 |
 | response | jsonb | 响应数据 |
@@ -135,35 +191,34 @@ SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 ## Testing
 
 ```bash
-# 运行单元测试
-npx tsx tests/engine/condition-evaluator.test.ts
-npx tsx tests/actions/action-registry.test.ts
+# 工作流路由与作用域
+npx tsx tests/workflow/scope-routing.test.ts
 
-# 运行集成测试
-npx tsx tests/integration/event-processing.test.ts
+# 条件插件
+npx tsx tests/workflow/condition.test.ts
+
+# Bitable 动作插件
+npx tsx tests/workflow/bitable-plugins.test.ts
 ```
 
 ## Project Structure
 
-```
+```text
 src/
-├── index.ts              # 应用入口
-├── lark.ts               # 飞书事件监听
+├── index.ts                 # HTTP 入口（API/Docs/UI 路由）
+├── lark.ts                  # 飞书事件监听与 workflow-only 编排
+├── services/
+│   └── field-mappings.ts    # 字段映射刷新服务
+├── routes/
+│   ├── workflow.ts          # 工作流管理接口
+│   └── workflow-ui.ts       # 工作流管理页面路由
 ├── db/
-│   ├── client.ts         # Supabase 客户端
-│   ├── bitables.ts       # 多维表格数据访问
-│   ├── rules.ts          # 规则数据访问
-│   └── execution-logs.ts # 执行日志数据访问
-├── engine/
-│   ├── index.ts          # 规则引擎导出
-│   ├── condition-evaluator.ts  # 条件评估器
-│   └── event-router.ts   # 事件路由器
-└── actions/
-    ├── index.ts          # 动作注册
-    ├── registry.ts       # 动作执行器
-    ├── send-feishu-message.ts
-    ├── call-api.ts
-    ├── create-record.ts
-    ├── update-record.ts
-    └── delete-record.ts
+│   ├── client.ts            # Supabase 客户端
+│   ├── field-mappings.ts    # 字段映射 registry 访问层
+│   ├── workflows.ts         # 工作流数据访问
+│   └── execution-logs.ts    # 执行日志数据访问
+└── workflow/
+    ├── core/                # 工作流引擎核心
+    ├── plugins/             # 工作流插件（condition/action.*）
+    └── scope.ts             # scope 路由模型
 ```

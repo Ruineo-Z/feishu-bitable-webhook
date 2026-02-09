@@ -2,7 +2,7 @@ import { ActionHandler, ActionResult } from './registry'
 import { client } from '../client'
 import { ActionParams } from '../db/rules'
 import { logger, createLoggerWithTrace } from '../logger'
-import { getSupabase } from '../db/client'
+import { fieldMappingsDb } from '../db/field-mappings'
 
 type BitableFieldPayloadValue =
   | string
@@ -28,18 +28,9 @@ interface ActionContext extends Record<string, unknown> {
   field_mappings?: Record<string, string>
 }
 
-// 根据 table_id 获取字段映射
-async function getFieldMappingsForTable(tableId: string): Promise<Record<string, string>> {
+async function getFieldMappingsForTable(appToken: string, tableId: string): Promise<Record<string, string>> {
   try {
-    const response = await getSupabase()
-      .from('bitables')
-      .select('field_mappings')
-      .eq('table_id', tableId)
-      .single()
-
-    const data = response.data as { field_mappings?: Record<string, string> } | null
-
-    return (data?.field_mappings as Record<string, string>) || {}
+    return await fieldMappingsDb.getIdToNameMap(appToken, tableId)
   } catch {
     return {}
   }
@@ -55,10 +46,8 @@ const createRecord: ActionHandler = {
       throw new Error('Missing required params: app_token, table_id, or fields')
     }
 
-    // 获取目标表的字段映射
-    const fieldMappings = await getFieldMappingsForTable(table_id)
+    const fieldMappings = await getFieldMappingsForTable(app_token, table_id)
 
-    // 转换 fields 中的字段 ID 为字段名称
     const fieldsWithNames: Record<string, unknown> = {}
     for (const [fieldId, value] of Object.entries(fields as Record<string, unknown>)) {
       if (value === null || value === undefined) {
@@ -74,14 +63,14 @@ const createRecord: ActionHandler = {
       const res = await client.bitable.v1.appTableRecord.create({
         path: {
           app_token,
-          table_id
+          table_id,
         },
         params: {
-          user_id_type: 'open_id'
+          user_id_type: 'open_id',
         },
         data: {
-          fields: fieldsWithNames as BitableFieldPayload
-        }
+          fields: fieldsWithNames as BitableFieldPayload,
+        },
       })
 
       if (res?.code && res.code !== 0) {
@@ -89,7 +78,7 @@ const createRecord: ActionHandler = {
           success: false,
           error: res?.msg || 'create_record_failed',
           response: res as unknown as Record<string, unknown>,
-          durationMs: Date.now() - startTime
+          durationMs: Date.now() - startTime,
         }
       }
 
@@ -98,17 +87,17 @@ const createRecord: ActionHandler = {
       return {
         success: true,
         response: { recordId },
-        durationMs: Date.now() - startTime
+        durationMs: Date.now() - startTime,
       }
     } catch (error: any) {
       log.error('[create-record] 错误响应:', JSON.stringify(error?.response?.data, null, 2))
       return {
         success: false,
         error: error?.response?.data?.msg || error?.message || String(error),
-        durationMs: Date.now() - startTime
+        durationMs: Date.now() - startTime,
       }
     }
-  }
+  },
 }
 
 export default createRecord
