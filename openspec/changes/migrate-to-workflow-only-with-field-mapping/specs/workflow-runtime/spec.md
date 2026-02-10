@@ -11,12 +11,12 @@ The system SHALL process Feishu record-change events exclusively through workflo
 - **WHEN** a record change event is handled by the runtime
 - **THEN** the system MUST NOT invoke legacy rules matching/execution in the realtime event path
 
-### Requirement: Workflow runtime SHALL preserve scope-based matching semantics
-The system SHALL preserve table-scope and global-scope candidate merging semantics for active workflows.
+### Requirement: Workflow runtime SHALL preserve table-scope matching semantics
+The system SHALL preserve table-scope candidate filtering semantics for active workflows.
 
-#### Scenario: Merge table and global workflows
-- **WHEN** table-scoped workflows and global workflows are both active for an event
-- **THEN** the runtime MUST include both candidate sets before step evaluation
+#### Scenario: Route only table-scoped workflows
+- **WHEN** table-scoped workflows are active for an event
+- **THEN** the runtime MUST include only table-scoped candidates matching the same `app_token` and `table_id`
 
 #### Scenario: Ignore inactive workflows
 - **WHEN** a workflow is marked inactive

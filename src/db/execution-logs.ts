@@ -18,7 +18,7 @@ export interface ActionExecution {
  */
 export interface ExecutionLog {
   id: string
-  rule_id: string
+  rule_id: string | null
   rule_name: string | null
   trigger_action: string
   record_id: string

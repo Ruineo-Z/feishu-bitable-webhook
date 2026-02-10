@@ -24,16 +24,12 @@ The workflow management UI SHALL query workflow list data from `GET /api/workflo
 - **WHEN** a user changes list pagination parameters (limit/offset)
 - **THEN** the UI MUST request and render the corresponding page using backend pagination metadata
 
-### Requirement: UI SHALL support creating workflows with scope-aware validation
+### Requirement: UI SHALL support creating workflows with table scope validation
 The workflow management UI SHALL allow users to create workflows via `POST /api/workflows` and MUST validate key input fields before submission.
 
 #### Scenario: Create table-scoped workflow
 - **WHEN** a user submits a new workflow with scope type `table`
 - **THEN** the UI MUST require non-empty `appToken` and `tableId` before sending the request
-
-#### Scenario: Create global-scoped workflow
-- **WHEN** a user submits a new workflow with scope type `global`
-- **THEN** the UI MUST submit payload without table binding fields and show creation feedback from API response
 
 #### Scenario: Block invalid JSON config input
 - **WHEN** a user enters malformed JSON for workflow DSL fields

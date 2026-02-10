@@ -2,7 +2,7 @@ const WORKFLOW_API_BASE = '/api/workflows'
 
 const FRIENDLY_ERROR_MESSAGES = {
   WORKFLOW_NOT_FOUND: '工作流不存在，可能已被删除，请刷新列表。',
-  WORKFLOW_CREATE_FAILED: '创建失败，请检查 scope 与 JSON 配置是否正确。',
+  WORKFLOW_CREATE_FAILED: '创建失败，请检查 table scope 与 JSON 配置是否正确。',
   WORKFLOW_UPDATE_FAILED: '更新失败，请确认配置后重试。',
   WORKFLOW_DELETE_FAILED: '删除失败，请稍后再试。',
   WORKFLOW_LIST_FAILED: '加载工作流列表失败，请检查服务与数据库连接。',

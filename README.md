@@ -13,7 +13,7 @@
 ## Features
 
 - 飞书多维表格 WebSocket 长连接事件监听
-- Workflow scope 路由（table/global）
+- Workflow scope 路由（table-only）
 - Workflow 插件动作（消息发送 / 记录增删改查）
 - 字段映射 registry（`field_id -> field_name`）
 - 执行日志查询
@@ -29,7 +29,7 @@ Feishu Bitable Events (WS)
    src/lark.ts 事件接入层
           │
           ├── workflow 路由与执行
-          │     ├── scope 候选检索（table/global）
+          │     ├── scope 候选检索（table）
           │     ├── 字段映射转换（field_id -> field_name）
           │     └── Workflow Engine + Plugins
           │
@@ -144,7 +144,7 @@ SUPABASE_KEY=your_service_role_key
 | name | text | 工作流名称 |
 | config | jsonb | workflow DSL |
 | is_active | boolean | 是否启用 |
-| scope_type | text | 作用域类型（table/global） |
+| scope_type | text | 作用域类型（仅 table） |
 | app_token | text | table 作用域绑定 app_token |
 | table_id | text | table 作用域绑定 table_id |
 | created_at | timestamptz | 创建时间 |

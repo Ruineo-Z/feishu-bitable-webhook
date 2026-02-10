@@ -76,7 +76,6 @@ async function main() {
   console.log(`- updatesSucceeded: ${plan.updates.length - applyErrors.length}`);
   console.log(`- updatesFailed: ${applyErrors.length}`);
   console.log(`- tableScopedBackfills: ${plan.audit.tableScoped.length}`);
-  console.log(`- globalScopedBackfills: ${plan.audit.globalScoped.length}`);
   console.log(`- anomalies: ${plan.audit.anomalies.length}`);
   console.log(`- auditReport: ${auditPath}`);
 }

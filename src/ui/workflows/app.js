@@ -95,25 +95,21 @@ function validateAndBuildPayload() {
   }
 
   const scopeType = elements.scopeType.value
-  let scope = null
+  if (scopeType !== 'table') {
+    throw new Error('当前仅支持 table 作用域。')
+  }
 
-  if (scopeType === 'table') {
-    const appToken = elements.scopeAppToken.value.trim()
-    const tableId = elements.scopeTableId.value.trim()
+  const appToken = elements.scopeAppToken.value.trim()
+  const tableId = elements.scopeTableId.value.trim()
 
-    if (!appToken || !tableId) {
-      throw new Error('table 作用域必须填写 appToken 和 tableId。')
-    }
+  if (!appToken || !tableId) {
+    throw new Error('table 作用域必须填写 appToken 和 tableId。')
+  }
 
-    scope = {
-      type: 'table',
-      appToken,
-      tableId,
-    }
-  } else {
-    scope = {
-      type: 'global',
-    }
+  const scope = {
+    type: 'table',
+    appToken,
+    tableId,
   }
 
   return {

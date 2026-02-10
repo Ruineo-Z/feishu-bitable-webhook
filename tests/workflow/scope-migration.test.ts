@@ -48,7 +48,7 @@ function createConfig(appToken?: string, tableId?: string): WorkflowConfig {
 
 console.log('Workflow Scope Migration Tests\n');
 
-test('回填计划应正确识别 table/global 与异常项', () => {
+test('回填计划应仅产出可推导的 table 作用域更新，并记录无法迁移项', () => {
   const plan = buildWorkflowScopeBackfillPlan([
     {
       id: 'wf_1',
@@ -92,13 +92,12 @@ test('回填计划应正确识别 table/global 与异常项', () => {
     },
   ]);
 
-  expect(plan.updates).toHaveLength(4);
+  expect(plan.updates).toHaveLength(2);
   expect(plan.audit.tableScoped).toHaveLength(2);
-  expect(plan.audit.globalScoped).toHaveLength(2);
   expect(plan.audit.anomalies).toHaveLength(2);
 });
 
-test('回填输出应包含 table 与 global 更新字段', () => {
+test('回填输出只包含 table 更新字段，缺失绑定会进入异常清单', () => {
   const plan = buildWorkflowScopeBackfillPlan([
     {
       id: 'wf_table',
@@ -109,8 +108,8 @@ test('回填输出应包含 table 与 global 更新字段', () => {
       table_id: null,
     },
     {
-      id: 'wf_global',
-      name: 'legacy-global',
+      id: 'wf_unbound',
+      name: 'legacy-unbound',
       config: createConfig(),
       scope_type: null,
       app_token: null,
@@ -119,13 +118,12 @@ test('回填输出应包含 table 与 global 更新字段', () => {
   ]);
 
   const tableUpdate = plan.updates.find((item) => item.id === 'wf_table');
-  const globalUpdate = plan.updates.find((item) => item.id === 'wf_global');
+  const unboundUpdate = plan.updates.find((item) => item.id === 'wf_unbound');
 
   expect(tableUpdate?.scope_type).toBe('table');
   expect(tableUpdate?.app_token).toBe('appA');
   expect(tableUpdate?.table_id).toBe('tbl1');
 
-  expect(globalUpdate?.scope_type).toBe('global');
-  expect(globalUpdate?.app_token).toBe(null);
-  expect(globalUpdate?.table_id).toBe(null);
+  expect(unboundUpdate).toBe(undefined);
+  expect(plan.audit.anomalies).toHaveLength(1);
 });

@@ -38,7 +38,7 @@ function createWorkflowRecord(
   id: string,
   name: string,
   config: WorkflowConfig,
-  scopeType: 'table' | 'global' | null,
+  scopeType: 'table' | null,
   appToken: string | null,
   tableId: string | null,
 ): WorkflowRecord {
@@ -73,10 +73,19 @@ function createConfig(appToken?: string, tableId?: string): WorkflowConfig {
 
 console.log('Workflow Scope Routing Tests\n');
 
-test('table 作用域候选应命中 source=table', () => {
-  const tableWorkflow = createWorkflowRecord(
-    'wf_table',
-    'table-workflow',
+test('table 作用域候选应全部命中 source=table', () => {
+  const tableWorkflowA = createWorkflowRecord(
+    'wf_table_a',
+    'table-workflow-a',
+    createConfig('appA', 'tbl1'),
+    'table',
+    'appA',
+    'tbl1',
+  );
+
+  const tableWorkflowB = createWorkflowRecord(
+    'wf_table_b',
+    'table-workflow-b',
     createConfig('appA', 'tbl1'),
     'table',
     'appA',
@@ -84,60 +93,24 @@ test('table 作用域候选应命中 source=table', () => {
   );
 
   const candidates = buildScopedWorkflowCandidates({
-    tableScoped: [tableWorkflow],
-    globalScoped: [],
-  });
-
-  expect(candidates).toHaveLength(1);
-  expect(candidates[0].source).toBe('table');
-});
-
-test('global 作用域候选应命中 source=global', () => {
-  const globalWorkflow = createWorkflowRecord(
-    'wf_global',
-    'global-workflow',
-    createConfig(),
-    'global',
-    null,
-    null,
-  );
-
-  const candidates = buildScopedWorkflowCandidates({
-    tableScoped: [],
-    globalScoped: [globalWorkflow],
-  });
-
-  expect(candidates).toHaveLength(1);
-  expect(candidates[0].source).toBe('global');
-});
-
-test('混合候选应同时包含 table 与 global', () => {
-  const tableWorkflow = createWorkflowRecord(
-    'wf_table_mix',
-    'table-workflow',
-    createConfig('appA', 'tbl1'),
-    'table',
-    'appA',
-    'tbl1',
-  );
-
-  const globalWorkflow = createWorkflowRecord(
-    'wf_global_mix',
-    'global-workflow',
-    createConfig(),
-    'global',
-    null,
-    null,
-  );
-
-  const candidates = buildScopedWorkflowCandidates({
-    tableScoped: [tableWorkflow],
-    globalScoped: [globalWorkflow],
+    tableScoped: [tableWorkflowA, tableWorkflowB],
   });
 
   expect(candidates).toHaveLength(2);
+  expect(candidates[0].source).toBe('table');
+  expect(candidates[1].source).toBe('table');
 
   const stats = summarizeWorkflowCandidateSources(candidates);
-  expect(stats.table).toBe(1);
-  expect(stats.global).toBe(1);
+  expect(stats.table).toBe(2);
+});
+
+test('无候选时返回空数组', () => {
+  const candidates = buildScopedWorkflowCandidates({
+    tableScoped: [],
+  });
+
+  expect(candidates).toHaveLength(0);
+
+  const stats = summarizeWorkflowCandidateSources(candidates);
+  expect(stats.table).toBe(0);
 });

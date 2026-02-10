@@ -6,6 +6,7 @@ import { createEventTraceId, createFeishuLogger } from './logger'
 import { parseFeishuEvent, ParsedEvent } from './parser'
 import { getSupabase } from './db/client'
 import { WorkflowEngine } from './workflow/core/engine'
+import { WorkflowConfig } from './workflow/types'
 import { registerStandardPlugins } from './workflow/plugins'
 import { workflowsDb, summarizeWorkflowCandidateSources } from './db/workflows'
 
@@ -66,6 +67,66 @@ function normalizeTriggerAction(eventType: ParsedEvent['eventType']): string {
   if (eventType === 'record_created') return 'add'
   if (eventType === 'record_deleted') return 'remove'
   return eventType
+}
+
+
+function normalizeWorkflowEventType(value: unknown): ParsedEvent['eventType'] | null {
+  if (typeof value !== 'string') return null
+
+  switch (value.trim().toLowerCase()) {
+    case 'record_created':
+    case 'record_added':
+    case 'add':
+      return 'record_created'
+    case 'record_updated':
+    case 'record_edited':
+    case 'update':
+      return 'record_updated'
+    case 'record_deleted':
+    case 'remove':
+    case 'delete':
+      return 'record_deleted'
+    default:
+      return null
+  }
+}
+
+function collectWorkflowEventTypes(workflowConfig: WorkflowConfig | null | undefined): ParsedEvent['eventType'][] {
+  const triggerConfig = workflowConfig?.trigger?.config
+
+  if (!triggerConfig || typeof triggerConfig !== 'object') {
+    return []
+  }
+
+  const config = triggerConfig as Record<string, unknown>
+  const rawValues: unknown[] = []
+  const candidates = [config.action, config.actions, config.eventType, config.eventTypes]
+
+  for (const item of candidates) {
+    if (Array.isArray(item)) {
+      rawValues.push(...item)
+    } else if (item !== undefined && item !== null) {
+      rawValues.push(item)
+    }
+  }
+
+  const normalized = rawValues
+    .map((item) => normalizeWorkflowEventType(item))
+    .filter((item): item is ParsedEvent['eventType'] => !!item)
+
+  return Array.from(new Set(normalized))
+}
+
+function shouldRunWorkflowForEvent(
+  workflowConfig: WorkflowConfig | null | undefined,
+  currentEventType: ParsedEvent['eventType'],
+): boolean {
+  const configuredEventTypes = collectWorkflowEventTypes(workflowConfig)
+  if (configuredEventTypes.length === 0) {
+    return true
+  }
+
+  return configuredEventTypes.includes(currentEventType)
 }
 
 async function mapFieldsByName(
@@ -162,59 +223,72 @@ async function processEvent(rawEvent: unknown, version: string) {
         version,
       })
 
-      const executionResults = await Promise.allSettled(
-        workflowCandidates.map(async ({ workflow, source }) => {
-          const triggerContext = {
-            record_id: recordId,
-            app_token: appToken,
-            table_id: tableId,
-            record: {
-              fields: mappedAfter.mappedFields,
-              fields_by_id: fields,
-              beforeFields: mappedBefore.mappedFields,
-              before_fields_by_id: beforeFields,
-            },
-            action_list: [{ action: triggerAction }],
-            operator_id: operatorOpenId ? { open_id: operatorOpenId } : undefined,
-            traceId,
-          }
-
-          const workflowContext = await workflowEngine.execute(workflow.config, triggerContext)
-          const summary = summarizeWorkflowResult(workflowContext.steps as Record<string, { success: boolean; error?: string; output?: unknown }>)
-
-          logExecution({
-            rule_id: workflow.id,
-            rule_name: `workflow:${workflow.name}`,
-            trigger_action: triggerAction,
-            record_id: recordId,
-            operator_openid: operatorOpenId || null,
-            record_snapshot: {
-              fields: mappedAfter.mappedFields,
-              beforeFields: mappedBefore.mappedFields,
-            },
-            status: summary.status,
-            error_message: summary.errorMessage,
-            duration_ms: null,
-            response: {
-              workflowId: workflow.id,
-              source,
-              steps: workflowContext.steps,
-            },
-          })
-
-          return {
-            workflowId: workflow.id,
-            workflowName: workflow.name,
-            source,
-            status: summary.status,
-            error: summary.errorMessage,
-          }
-        }),
+      const executableWorkflows = workflowCandidates.filter(({ workflow }) =>
+        shouldRunWorkflowForEvent(workflow.config, eventType),
       )
 
-      const failedExecutions = executionResults.filter((item) => item.status === 'rejected')
-      if (failedExecutions.length > 0) {
-        log.error(`工作流执行阶段发生 ${failedExecutions.length} 个异常`, failedExecutions)
+      const skippedByEventType = workflowCandidates.length - executableWorkflows.length
+      if (skippedByEventType > 0) {
+        log.info(`按事件类型过滤后跳过 ${skippedByEventType} 个工作流`, { eventType })
+      }
+
+      if (executableWorkflows.length === 0) {
+        log.info('候选工作流与当前事件类型不匹配，跳过执行')
+      } else {
+        const executionResults = await Promise.allSettled(
+          executableWorkflows.map(async ({ workflow, source }) => {
+            const triggerContext = {
+              record_id: recordId,
+              app_token: appToken,
+              table_id: tableId,
+              record: {
+                fields: mappedAfter.mappedFields,
+                fields_by_id: fields,
+                beforeFields: mappedBefore.mappedFields,
+                before_fields_by_id: beforeFields,
+              },
+              action_list: [{ action: triggerAction }],
+              operator_id: operatorOpenId ? { open_id: operatorOpenId } : undefined,
+              traceId,
+            }
+
+            const workflowContext = await workflowEngine.execute(workflow.config, triggerContext)
+            const summary = summarizeWorkflowResult(workflowContext.steps as Record<string, { success: boolean; error?: string; output?: unknown }>)
+
+            logExecution({
+              rule_id: null,
+              rule_name: `workflow:${workflow.name}`,
+              trigger_action: triggerAction,
+              record_id: recordId,
+              operator_openid: operatorOpenId || null,
+              record_snapshot: {
+                fields: mappedAfter.mappedFields,
+                beforeFields: mappedBefore.mappedFields,
+              },
+              status: summary.status,
+              error_message: summary.errorMessage,
+              duration_ms: null,
+              response: {
+                workflowId: workflow.id,
+                source,
+                steps: workflowContext.steps,
+              },
+            })
+
+            return {
+              workflowId: workflow.id,
+              workflowName: workflow.name,
+              source,
+              status: summary.status,
+              error: summary.errorMessage,
+            }
+          }),
+        )
+
+        const failedExecutions = executionResults.filter((item) => item.status === 'rejected')
+        if (failedExecutions.length > 0) {
+          log.error(`工作流执行阶段发生 ${failedExecutions.length} 个异常`, failedExecutions)
+        }
       }
     } else {
       log.info('未命中任何工作流候选')

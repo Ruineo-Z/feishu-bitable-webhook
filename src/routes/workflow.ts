@@ -17,21 +17,18 @@ const WorkflowListQuerySchema = z.object({
   offset: z.coerce.number().optional().default(0).describe('分页偏移量，默认 0'),
 })
 
-const WorkflowScopeSchema = z.discriminatedUnion('type', [
-  z.object({
-    type: z.literal('table').describe('表级作用域'),
+const WorkflowScopeSchema = z
+  .object({
+    type: z.literal('table').describe('表级作用域（仅支持 table）'),
     appToken: z.string().min(1).describe('绑定 app_token（示例：KaWjbBvGeaG0Fus5bwWcKLsJnfb）'),
     tableId: z.string().min(1).describe('绑定 table_id（示例：tblhV7wQW9uqdkMd）'),
-  }),
-  z.object({
-    type: z.literal('global').describe('全局作用域（必须显式声明）'),
-  }),
-]).describe('工作流作用域配置；推荐使用 table 作用域绑定到具体数据表')
+  })
+  .describe('工作流作用域配置（仅支持 table 作用域）')
 
 const CreateWorkflowSchema = z.object({
   name: z.string().describe('工作流名称'),
   config: WorkflowConfigSchema.describe('工作流 DSL 配置'),
-  scope: WorkflowScopeSchema.describe('工作流作用域（必填）'),
+  scope: WorkflowScopeSchema.describe('工作流作用域（必填，仅支持 table）'),
   isActive: z.boolean().optional().default(true).describe('是否启用，默认 true'),
 })
 
@@ -121,6 +118,10 @@ function toWorkflowDetailResponse(record: WorkflowRecord) {
   }
 }
 
+function isTableScopeRequiredError(error: unknown): boolean {
+  return error instanceof Error && error.message === 'WORKFLOW_SCOPE_TABLE_BINDING_REQUIRED'
+}
+
 // --- Routes Registration ---
 
 export default function registerWorkflowRoutes(app: OpenAPIHono) {
@@ -131,7 +132,7 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
       path: '/api/workflows',
       tags: ['Workflows'],
       summary: '查询工作流列表',
-      description: '按启用状态筛选工作流，并支持分页查询。列表返回摘要信息与 scope。',
+      description: '按启用状态筛选工作流，并支持分页查询。列表返回摘要信息与 table scope。',
       request: {
         query: WorkflowListQuerySchema,
       },
@@ -191,7 +192,7 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
       path: '/api/workflows/{id}',
       tags: ['Workflows'],
       summary: '查询工作流详情',
-      description: '根据工作流 ID 获取完整工作流配置与作用域。',
+      description: '根据工作流 ID 获取完整工作流配置与 table 作用域。',
       request: {
         params: WorkflowIdParamSchema,
       },
@@ -245,8 +246,7 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
       path: '/api/workflows',
       tags: ['Workflows'],
       summary: '创建工作流',
-      description:
-        '根据请求体中的名称、DSL 配置与作用域创建新工作流。推荐使用 table 作用域快速路由；global 必须显式声明。',
+      description: '根据请求体中的名称、DSL 配置与 table 作用域创建新工作流。',
       request: {
         body: {
           content: {
@@ -262,6 +262,14 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
           content: {
             'application/json': {
               schema: WorkflowSuccessSchema,
+            },
+          },
+        },
+        400: {
+          description: '请求参数不合法',
+          content: {
+            'application/json': {
+              schema: ErrorEnvelopeSchema,
             },
           },
         },
@@ -290,7 +298,11 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
         )
 
         return ok(c, toWorkflowDetailResponse(workflow), '创建工作流成功', 201)
-      } catch {
+      } catch (error) {
+        if (isTableScopeRequiredError(error)) {
+          return err(c, 'WORKFLOW_SCOPE_TABLE_REQUIRED', '仅支持 table 作用域，必须提供 appToken 与 tableId', 400)
+        }
+
         return err(c, 'WORKFLOW_CREATE_FAILED', '创建工作流失败', 500)
       }
     }) as any,
@@ -321,6 +333,14 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
           content: {
             'application/json': {
               schema: WorkflowSuccessSchema,
+            },
+          },
+        },
+        400: {
+          description: '请求参数不合法',
+          content: {
+            'application/json': {
+              schema: ErrorEnvelopeSchema,
             },
           },
         },
@@ -362,9 +382,9 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
           name?: string
           config: z.infer<typeof WorkflowConfigSchema>
           is_active?: boolean
-          scope_type: 'table' | 'global'
-          app_token: string | null
-          table_id: string | null
+          scope_type: 'table'
+          app_token: string
+          table_id: string
         } = {
           config: normalizedConfig,
           scope_type: scopeFields.scope_type,
@@ -382,7 +402,11 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
         }
 
         return ok(c, toWorkflowDetailResponse(updated), '更新工作流成功')
-      } catch {
+      } catch (error) {
+        if (isTableScopeRequiredError(error)) {
+          return err(c, 'WORKFLOW_SCOPE_TABLE_REQUIRED', '仅支持 table 作用域，必须提供 appToken 与 tableId', 400)
+        }
+
         return err(c, 'WORKFLOW_UPDATE_FAILED', '更新工作流失败', 500)
       }
     }) as any,

@@ -53,19 +53,16 @@
 - [ ] 3.1 table scope 命中验证
   - [ ] 创建一个 `scope=table` workflow（绑定目标 `app_token/table_id`）
   - [ ] 在该表新增/编辑记录，确认 workflow 被命中执行
-- [ ] 3.2 global scope 命中验证
-  - [ ] 创建一个 `scope=global` workflow
-  - [ ] 在任意受测表触发事件，确认 global workflow 被命中
-- [ ] 3.3 create 动作验证
+- [ ] 3.2 create 动作验证
   - [ ] workflow step 使用 `action.bitable.create`
   - [ ] 确认目标表新增记录成功
-- [ ] 3.4 update 动作验证
+- [ ] 3.3 update 动作验证
   - [ ] workflow step 使用 `action.bitable.update`
   - [ ] 确认目标记录字段更新成功
-- [ ] 3.5 delete 动作验证
+- [ ] 3.4 delete 动作验证
   - [ ] workflow step 使用 `action.bitable.delete`
   - [ ] 通过 `record_id` 或 `filter` 删除成功
-- [ ] 3.6 query 动作验证
+- [ ] 3.5 query 动作验证
   - [ ] workflow step 使用 `action.bitable.query`
   - [ ] 返回 records/total/hasMore 结构正确
 
@@ -92,7 +89,7 @@
   - [ ] 故意制造一个失败 step
   - [ ] 日志中可见失败原因，不出现静默失败
 - [ ] 5.3 路由日志检查
-  - [ ] 控制台出现候选命中统计（table/global）
+  - [ ] 控制台出现候选命中统计（table）
 
 ---
 

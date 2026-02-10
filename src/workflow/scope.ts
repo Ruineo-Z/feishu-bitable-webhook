@@ -1,6 +1,6 @@
 import { WorkflowConfig } from './types';
 
-export type WorkflowScopeType = 'table' | 'global';
+export type WorkflowScopeType = 'table';
 
 export interface TableWorkflowScopeInput {
   type: 'table';
@@ -8,16 +8,12 @@ export interface TableWorkflowScopeInput {
   tableId: string;
 }
 
-export interface GlobalWorkflowScopeInput {
-  type: 'global';
-}
-
-export type WorkflowScopeInput = TableWorkflowScopeInput | GlobalWorkflowScopeInput;
+export type WorkflowScopeInput = TableWorkflowScopeInput;
 
 export interface WorkflowScopeDbFields {
   scope_type: WorkflowScopeType;
-  app_token: string | null;
-  table_id: string | null;
+  app_token: string;
+  table_id: string;
 }
 
 export interface WorkflowScopeRecordLike {
@@ -40,13 +36,11 @@ export interface ScopeBackfillUpdate extends WorkflowScopeDbFields {
 export interface ScopeBackfillAuditItem {
   id: string;
   name: string;
-  scopeType: WorkflowScopeType;
-  appToken: string | null;
-  tableId: string | null;
+  scopeType: 'table';
+  appToken: string;
+  tableId: string;
   reason:
     | 'legacy_trigger_binding'
-    | 'legacy_trigger_missing_binding'
-    | 'legacy_trigger_partial_binding'
     | 'invalid_existing_scope_repaired';
 }
 
@@ -60,7 +54,6 @@ export interface ScopeBackfillPlan {
   updates: ScopeBackfillUpdate[];
   audit: {
     tableScoped: ScopeBackfillAuditItem[];
-    globalScoped: ScopeBackfillAuditItem[];
     anomalies: ScopeBackfillAnomaly[];
   };
 }
@@ -83,33 +76,25 @@ function extractLegacyBinding(config: WorkflowConfig | null | undefined): {
   };
 }
 
-export function inferScopeFromWorkflowConfig(config: WorkflowConfig): WorkflowScopeInput {
+export function inferScopeFromWorkflowConfig(config: WorkflowConfig): WorkflowScopeInput | null {
   const legacyBinding = extractLegacyBinding(config);
 
-  if (legacyBinding.appToken && legacyBinding.tableId) {
-    return {
-      type: 'table',
-      appToken: legacyBinding.appToken,
-      tableId: legacyBinding.tableId,
-    };
-  }
-
-  return { type: 'global' };
-}
-
-export function toDbScopeFields(scope: WorkflowScopeInput): WorkflowScopeDbFields {
-  if (scope.type === 'table') {
-    return {
-      scope_type: 'table',
-      app_token: scope.appToken,
-      table_id: scope.tableId,
-    };
+  if (!legacyBinding.appToken || !legacyBinding.tableId) {
+    return null;
   }
 
   return {
-    scope_type: 'global',
-    app_token: null,
-    table_id: null,
+    type: 'table',
+    appToken: legacyBinding.appToken,
+    tableId: legacyBinding.tableId,
+  };
+}
+
+export function toDbScopeFields(scope: WorkflowScopeInput): WorkflowScopeDbFields {
+  return {
+    scope_type: 'table',
+    app_token: scope.appToken,
+    table_id: scope.tableId,
   };
 }
 
@@ -126,15 +111,14 @@ export function resolveScopeFromRecord(record: WorkflowScopeRecordLike): Workflo
     };
   }
 
-  if (explicitScopeType === 'global') {
-    return { type: 'global' };
-  }
-
   if (record.config) {
-    return inferScopeFromWorkflowConfig(record.config);
+    const inferredScope = inferScopeFromWorkflowConfig(record.config);
+    if (inferredScope) {
+      return inferredScope;
+    }
   }
 
-  return { type: 'global' };
+  throw new Error('WORKFLOW_SCOPE_TABLE_BINDING_REQUIRED');
 }
 
 export function applyScopeToWorkflowConfig(
@@ -143,21 +127,16 @@ export function applyScopeToWorkflowConfig(
 ): WorkflowConfig {
   const originalTrigger = config.trigger || { type: 'lark.bitable.record.changed', config: {} };
   const originalTriggerConfig = (originalTrigger.config || {}) as Record<string, unknown>;
-  const nextTriggerConfig: Record<string, unknown> = { ...originalTriggerConfig };
-
-  if (scope.type === 'table') {
-    nextTriggerConfig.app_token = scope.appToken;
-    nextTriggerConfig.table_id = scope.tableId;
-  } else {
-    delete nextTriggerConfig.app_token;
-    delete nextTriggerConfig.table_id;
-  }
 
   return {
     ...config,
     trigger: {
       ...originalTrigger,
-      config: nextTriggerConfig,
+      config: {
+        ...originalTriggerConfig,
+        app_token: scope.appToken,
+        table_id: scope.tableId,
+      },
     },
   };
 }
@@ -166,7 +145,6 @@ export function buildWorkflowScopeBackfillPlan(rows: ScopeBackfillSourceRow[]): 
   const updates: ScopeBackfillUpdate[] = [];
   const audit: ScopeBackfillPlan['audit'] = {
     tableScoped: [],
-    globalScoped: [],
     anomalies: [],
   };
 
@@ -176,67 +154,42 @@ export function buildWorkflowScopeBackfillPlan(rows: ScopeBackfillSourceRow[]): 
     const explicitTableId = normalizeText(row.table_id);
     const legacyBinding = extractLegacyBinding(row.config);
 
-    const hasPartialLegacyBinding =
-      (legacyBinding.appToken && !legacyBinding.tableId) ||
-      (!legacyBinding.appToken && legacyBinding.tableId);
-
-    if (hasPartialLegacyBinding) {
-      audit.anomalies.push({
-        id: row.id,
-        name: row.name,
-        reason: 'legacy trigger binding is partial, fallback to global scope',
-      });
-    }
-
     const isExplicitTableValid =
       explicitScopeType === 'table' && !!explicitAppToken && !!explicitTableId;
-    const isExplicitGlobalValid = explicitScopeType === 'global';
 
-    if (isExplicitTableValid || isExplicitGlobalValid) {
+    if (isExplicitTableValid) {
       continue;
     }
 
-    if (explicitScopeType && !isExplicitTableValid && !isExplicitGlobalValid) {
-      audit.anomalies.push({
+    if (legacyBinding.appToken && legacyBinding.tableId) {
+      updates.push({
         id: row.id,
-        name: row.name,
-        reason: `invalid existing scope_type=${explicitScopeType}, will repair`,
+        scope_type: 'table',
+        app_token: legacyBinding.appToken,
+        table_id: legacyBinding.tableId,
       });
-    }
 
-    const inferredScope = inferScopeFromWorkflowConfig(row.config);
-    const scopeFields = toDbScopeFields(inferredScope);
-
-    updates.push({
-      id: row.id,
-      ...scopeFields,
-    });
-
-    if (inferredScope.type === 'table') {
       audit.tableScoped.push({
         id: row.id,
         name: row.name,
         scopeType: 'table',
-        appToken: inferredScope.appToken,
-        tableId: inferredScope.tableId,
-        reason: explicitScopeType
-          ? 'invalid_existing_scope_repaired'
-          : 'legacy_trigger_binding',
+        appToken: legacyBinding.appToken,
+        tableId: legacyBinding.tableId,
+        reason: explicitScopeType ? 'invalid_existing_scope_repaired' : 'legacy_trigger_binding',
       });
       continue;
     }
 
-    audit.globalScoped.push({
+    const hasPartialLegacyBinding =
+      (legacyBinding.appToken && !legacyBinding.tableId) ||
+      (!legacyBinding.appToken && legacyBinding.tableId);
+
+    audit.anomalies.push({
       id: row.id,
       name: row.name,
-      scopeType: 'global',
-      appToken: null,
-      tableId: null,
       reason: hasPartialLegacyBinding
-        ? 'legacy_trigger_partial_binding'
-        : explicitScopeType
-          ? 'invalid_existing_scope_repaired'
-          : 'legacy_trigger_missing_binding',
+        ? 'legacy trigger binding is partial, table scope cannot be inferred'
+        : 'missing table binding, manual migration required',
     });
   }
 

@@ -26,13 +26,9 @@ function formatScope(scope) {
     return '未知'
   }
 
-  if (scope.type === 'table') {
-    const appToken = scope.appToken || '-'
-    const tableId = scope.tableId || '-'
-    return `table · ${appToken}/${tableId}`
-  }
-
-  return 'global'
+  const appToken = scope.appToken || '-'
+  const tableId = scope.tableId || '-'
+  return `table · ${appToken}/${tableId}`
 }
 
 export function renderFeedback(elements, feedback) {
@@ -62,15 +58,9 @@ export function renderFormMode(elements, state) {
 export function fillFormFromWorkflow(elements, workflow) {
   elements.workflowName.value = workflow.name || ''
   elements.workflowActive.checked = Boolean(workflow.is_active)
-  elements.scopeType.value = workflow.scope?.type === 'global' ? 'global' : 'table'
-
-  if (workflow.scope?.type === 'table') {
-    elements.scopeAppToken.value = workflow.scope.appToken || ''
-    elements.scopeTableId.value = workflow.scope.tableId || ''
-  } else {
-    elements.scopeAppToken.value = ''
-    elements.scopeTableId.value = ''
-  }
+  elements.scopeType.value = 'table'
+  elements.scopeAppToken.value = workflow.scope?.appToken || ''
+  elements.scopeTableId.value = workflow.scope?.tableId || ''
 
   elements.workflowConfig.value = JSON.stringify(workflow.config || {}, null, 2)
   renderScopeBindingVisibility(elements)

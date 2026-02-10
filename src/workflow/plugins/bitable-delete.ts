@@ -14,6 +14,47 @@ interface SearchFilter {
   }>
 }
 
+
+function normalizeFilterPrimitive(value: unknown): string {
+  if (value === null || value === undefined) return ''
+
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+
+  if (typeof value === 'object') {
+    const candidate = value as Record<string, unknown>
+    if (typeof candidate.id === 'string' || typeof candidate.id === 'number') {
+      return String(candidate.id)
+    }
+    if (typeof candidate.user_id === 'string' || typeof candidate.user_id === 'number') {
+      return String(candidate.user_id)
+    }
+    if (typeof candidate.open_id === 'string' || typeof candidate.open_id === 'number') {
+      return String(candidate.open_id)
+    }
+    if (typeof candidate.text === 'string' || typeof candidate.text === 'number') {
+      return String(candidate.text)
+    }
+    if (typeof candidate.name === 'string' || typeof candidate.name === 'number') {
+      return String(candidate.name)
+    }
+    if (typeof candidate.value === 'string' || typeof candidate.value === 'number' || typeof candidate.value === 'boolean') {
+      return String(candidate.value)
+    }
+  }
+
+  return String(value)
+}
+
+function normalizeFilterValue(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeFilterPrimitive(item)).filter((item) => item !== '')
+  }
+
+  return [normalizeFilterPrimitive(value)].filter((item) => item !== '')
+}
+
 export class BitableDeletePlugin implements IWorkflowPlugin {
   async execute(context: WorkflowContext, config: Record<string, unknown>): Promise<StepResult> {
     const startTime = Date.now()
@@ -47,9 +88,14 @@ export class BitableDeletePlugin implements IWorkflowPlugin {
             throw new Error(`Missing field mapping for field ID: ${condition.field_name}`)
           }
 
+          const normalizedValue = condition.value !== undefined
+            ? normalizeFilterValue(condition.value)
+            : undefined
+
           return {
             ...condition,
             field_name: resolved.fieldName,
+            value: normalizedValue,
           }
         })
 

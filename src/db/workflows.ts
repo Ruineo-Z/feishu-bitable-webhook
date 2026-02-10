@@ -35,7 +35,7 @@ export interface WorkflowFilter {
   offset?: number;
 }
 
-export type WorkflowMatchSource = 'table' | 'global';
+export type WorkflowMatchSource = 'table';
 
 export interface WorkflowCandidate {
   workflow: WorkflowRecord;
@@ -44,21 +44,13 @@ export interface WorkflowCandidate {
 
 export interface WorkflowCandidateBuildInput {
   tableScoped: WorkflowRecord[];
-  globalScoped: WorkflowRecord[];
 }
 
 export function buildScopedWorkflowCandidates(input: WorkflowCandidateBuildInput): WorkflowCandidate[] {
-  const tableCandidates = input.tableScoped.map((workflow) => ({
+  return input.tableScoped.map((workflow) => ({
     workflow,
     source: 'table' as const,
   }));
-
-  const globalCandidates = input.globalScoped.map((workflow) => ({
-    workflow,
-    source: 'global' as const,
-  }));
-
-  return [...tableCandidates, ...globalCandidates];
 }
 
 export function summarizeWorkflowCandidateSources(candidates: WorkflowCandidate[]): Record<WorkflowMatchSource, number> {
@@ -69,7 +61,6 @@ export function summarizeWorkflowCandidateSources(candidates: WorkflowCandidate[
     },
     {
       table: 0,
-      global: 0,
     } as Record<WorkflowMatchSource, number>,
   );
 }
@@ -82,7 +73,10 @@ export const workflowsDb = {
     const { data, error } = await getSupabase()
       .from('workflows')
       .select('config')
-      .eq('is_active', true);
+      .eq('is_active', true)
+      .eq('scope_type', 'table')
+      .not('app_token', 'is', null)
+      .not('table_id', 'is', null);
 
     if (error) {
       console.error('Failed to fetch active workflows:', error);
@@ -99,6 +93,11 @@ export const workflowsDb = {
     let query = getSupabase()
       .from('workflows')
       .select('id,name,is_active,scope_type,app_token,table_id,created_at,updated_at', { count: 'exact' });
+
+    query = query
+      .eq('scope_type', 'table')
+      .not('app_token', 'is', null)
+      .not('table_id', 'is', null);
 
     if (filter.isActive !== undefined) {
       query = query.eq('is_active', filter.isActive);
@@ -134,36 +133,31 @@ export const workflowsDb = {
       if (error.code === 'PGRST116') return null;
       throw error;
     }
+
+    if (data.scope_type !== 'table' || !data.app_token || !data.table_id) {
+      return null;
+    }
+
     return data as WorkflowRecord;
   },
 
   /**
-   * Find event candidates by table scope + global scope
+   * Find event candidates by table scope
    */
   async findCandidatesByScope(appToken: string, tableId: string): Promise<WorkflowCandidate[]> {
-    const [tableScopedResult, globalScopedResult] = await Promise.all([
-      getSupabase()
-        .from('workflows')
-        .select('*')
-        .eq('is_active', true)
-        .eq('scope_type', 'table')
-        .eq('app_token', appToken)
-        .eq('table_id', tableId)
-        .order('created_at', { ascending: true }),
-      getSupabase()
-        .from('workflows')
-        .select('*')
-        .eq('is_active', true)
-        .eq('scope_type', 'global')
-        .order('created_at', { ascending: true }),
-    ]);
+    const tableScopedResult = await getSupabase()
+      .from('workflows')
+      .select('*')
+      .eq('is_active', true)
+      .eq('scope_type', 'table')
+      .eq('app_token', appToken)
+      .eq('table_id', tableId)
+      .order('created_at', { ascending: true });
 
     if (tableScopedResult.error) throw tableScopedResult.error;
-    if (globalScopedResult.error) throw globalScopedResult.error;
 
     return buildScopedWorkflowCandidates({
       tableScoped: (tableScopedResult.data || []) as WorkflowRecord[],
-      globalScoped: (globalScopedResult.data || []) as WorkflowRecord[],
     });
   },
 
