@@ -1,4 +1,13 @@
-import { Condition, ConditionExpression } from '../db/rules'
+export interface ConditionExpression {
+  field: string
+  operator: string
+  value: string | number | boolean | null | string[]
+}
+
+export interface Condition {
+  logic: 'AND' | 'OR'
+  expressions: ConditionExpression[]
+}
 
 /**
  * 字段类型处理器接口

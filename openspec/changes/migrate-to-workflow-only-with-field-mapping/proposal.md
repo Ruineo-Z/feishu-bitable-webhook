@@ -9,7 +9,7 @@
 - 为 workflow 引擎补齐核心多维表格动作能力（create/update/delete/query），替代旧 rules 动作依赖。
 - 下线运行时对 `bitables` 表级白名单/连接配置的强依赖，仅保留与字段映射相关的必要能力。
 - **BREAKING**：旧 `rules` 触发链路不再参与实时事件执行；依赖旧链路的行为需迁移到 workflow。
-- **BREAKING**：`/api/bitables/{id}/refresh-fields` 将由新的字段映射刷新能力替代（按 `app_token + table_id` 维度）。
+- **BREAKING**：`/api/bitables/{id}/refresh-fields` 已下线，统一使用新的字段映射刷新接口（按 `app_token + table_id` 维度）。
 
 ## Capabilities
 
@@ -18,7 +18,7 @@
 - `field-mapping-registry`: 定义字段映射的存储、刷新、增量更新与读取契约，保障 `field_id` 与字段名可互转。
 
 ### Modified Capabilities
-- `api-documentation`: 更新接口文档要求，反映字段映射新接口与旧 bitables 刷新接口替代关系。
+- `api-documentation`: 更新接口文档要求，反映字段映射新接口并移除旧 bitables 刷新接口。
 
 ## Impact
 

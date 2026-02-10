@@ -162,21 +162,6 @@ export function applyScopeToWorkflowConfig(
   };
 }
 
-export function matchLegacyWorkflowByTriggerConfig(
-  config: WorkflowConfig,
-  appToken: string,
-  tableId: string,
-): boolean {
-  const triggerConfig = ((config as any)?.trigger?.config || {}) as Record<string, unknown>;
-  const legacyAppToken = normalizeText(triggerConfig.app_token);
-  const legacyTableId = normalizeText(triggerConfig.table_id);
-
-  const appTokenMatch = !legacyAppToken || legacyAppToken === appToken;
-  const tableIdMatch = !legacyTableId || legacyTableId === tableId;
-
-  return appTokenMatch && tableIdMatch;
-}
-
 export function buildWorkflowScopeBackfillPlan(rows: ScopeBackfillSourceRow[]): ScopeBackfillPlan {
   const updates: ScopeBackfillUpdate[] = [];
   const audit: ScopeBackfillPlan['audit'] = {

@@ -19,8 +19,8 @@
 ## 数据与接口迁移
 
 - 映射存储：`bitables.field_mappings` -> `bitable_field_mappings`
-- 映射刷新：`/api/bitables/{id}/refresh-fields` -> `/api/mappings/refresh`
-- 运行时链路：双链路 -> workflow-only（可通过 `LEGACY_RULES_REALTIME_ENABLED=true` 回滚）
+- 映射刷新：统一使用 `/api/mappings/refresh`（旧 `/api/bitables/{id}/refresh-fields` 已下线）
+- 运行时链路：双链路 -> workflow-only（legacy rules realtime 已移除）
 
 ## 切换前检查
 

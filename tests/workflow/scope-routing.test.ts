@@ -86,9 +86,6 @@ test('table 作用域候选应命中 source=table', () => {
   const candidates = buildScopedWorkflowCandidates({
     tableScoped: [tableWorkflow],
     globalScoped: [],
-    legacyScoped: [],
-    appToken: 'appA',
-    tableId: 'tbl1',
   });
 
   expect(candidates).toHaveLength(1);
@@ -108,16 +105,13 @@ test('global 作用域候选应命中 source=global', () => {
   const candidates = buildScopedWorkflowCandidates({
     tableScoped: [],
     globalScoped: [globalWorkflow],
-    legacyScoped: [],
-    appToken: 'appA',
-    tableId: 'tbl1',
   });
 
   expect(candidates).toHaveLength(1);
   expect(candidates[0].source).toBe('global');
 });
 
-test('混合候选应同时包含 table、global 与 legacy-fallback', () => {
+test('混合候选应同时包含 table 与 global', () => {
   const tableWorkflow = createWorkflowRecord(
     'wf_table_mix',
     'table-workflow',
@@ -136,59 +130,14 @@ test('混合候选应同时包含 table、global 与 legacy-fallback', () => {
     null,
   );
 
-  const legacyWorkflow = createWorkflowRecord(
-    'wf_legacy_mix',
-    'legacy-workflow',
-    createConfig('appA', 'tbl1'),
-    null,
-    null,
-    null,
-  );
-
   const candidates = buildScopedWorkflowCandidates({
     tableScoped: [tableWorkflow],
     globalScoped: [globalWorkflow],
-    legacyScoped: [legacyWorkflow],
-    appToken: 'appA',
-    tableId: 'tbl1',
   });
 
-  expect(candidates).toHaveLength(3);
+  expect(candidates).toHaveLength(2);
 
   const stats = summarizeWorkflowCandidateSources(candidates);
   expect(stats.table).toBe(1);
   expect(stats.global).toBe(1);
-  expect(stats['legacy-fallback']).toBe(1);
-});
-
-test('legacy fallback 仅在旧配置匹配时命中', () => {
-  const legacyMatched = createWorkflowRecord(
-    'wf_legacy_matched',
-    'legacy-matched',
-    createConfig('appA', 'tbl1'),
-    null,
-    null,
-    null,
-  );
-
-  const legacyMismatched = createWorkflowRecord(
-    'wf_legacy_mismatch',
-    'legacy-mismatch',
-    createConfig('appB', 'tbl9'),
-    null,
-    null,
-    null,
-  );
-
-  const candidates = buildScopedWorkflowCandidates({
-    tableScoped: [],
-    globalScoped: [],
-    legacyScoped: [legacyMatched, legacyMismatched],
-    appToken: 'appA',
-    tableId: 'tbl1',
-  });
-
-  expect(candidates).toHaveLength(1);
-  expect(candidates[0].workflow.id).toBe('wf_legacy_matched');
-  expect(candidates[0].source).toBe('legacy-fallback');
 });

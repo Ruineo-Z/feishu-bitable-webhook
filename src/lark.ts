@@ -1,9 +1,6 @@
 import * as Lark from '@larksuiteoapi/node-sdk'
 import { wsClient } from './client'
-import { RuleMatcher, EventData } from './engine'
-import { registerActions, executeActionWithTimeout } from './actions'
 import { ExecutionLog } from './db/execution-logs'
-import { bitablesDb } from './db/bitables'
 import { fieldMappingsDb } from './db/field-mappings'
 import { createEventTraceId, createFeishuLogger } from './logger'
 import { parseFeishuEvent, ParsedEvent } from './parser'
@@ -12,12 +9,8 @@ import { WorkflowEngine } from './workflow/core/engine'
 import { registerStandardPlugins } from './workflow/plugins'
 import { workflowsDb, summarizeWorkflowCandidateSources } from './db/workflows'
 
-const ACTION_TIMEOUT_MS = 30000
-const LEGACY_RULES_REALTIME_ENABLED = process.env.LEGACY_RULES_REALTIME_ENABLED === 'true'
-
 registerStandardPlugins()
 const workflowEngine = new WorkflowEngine()
-const ruleMatcher = new RuleMatcher()
 
 const processedEvents = new Set<string>()
 const PROCESSED_EVENTS_TTL = 60 * 60 * 1000
@@ -115,74 +108,6 @@ function summarizeWorkflowResult(steps: Record<string, { success: boolean; error
   }
 }
 
-async function executeLegacyRules(
-  parsedEvent: ParsedEvent,
-  traceId: string,
-  log: ReturnType<typeof createFeishuLogger>,
-): Promise<void> {
-  const { appToken, tableId, recordId, operatorOpenId, fields, beforeFields } = parsedEvent
-
-  const bitable = await bitablesDb.findByTable(appToken, tableId)
-  if (!bitable) {
-    log.warn(`[legacy] 未配置 bitable，跳过 rules 执行: app_token=${appToken}, table_id=${tableId}`)
-    return
-  }
-
-  const eventData: EventData = {
-    file_token: appToken,
-    table_id: tableId,
-    action_list: [{
-      action: normalizeTriggerAction(parsedEvent.eventType),
-      record_id: recordId,
-    }],
-    operator_id: operatorOpenId ? { open_id: operatorOpenId } : undefined,
-    record: { fields, beforeFields },
-  }
-
-  const matchedRules = await ruleMatcher.match(eventData)
-  if (matchedRules.length === 0) {
-    log.info('[legacy] 无匹配规则')
-    return
-  }
-
-  log.warn(`[legacy] 启用规则链路，命中 ${matchedRules.length} 条规则`)
-
-  const fieldMappings = bitable.field_mappings as Record<string, string> || {}
-
-  for (const { rule, recordId: matchedRecordId, matchedActions } of matchedRules) {
-    const context = {
-      recordId: matchedRecordId,
-      record: fields,
-      beforeRecord: beforeFields,
-      operatorOpenId,
-      action: eventData.action_list?.[0]?.action || 'unknown',
-      traceId,
-      field_mappings: fieldMappings,
-    }
-
-    for (const ruleAction of matchedActions) {
-      const actionResult = await executeActionWithTimeout(ruleAction.action, context, ACTION_TIMEOUT_MS)
-
-      logExecution({
-        rule_id: rule.id!,
-        rule_name: `${rule.name} - ${ruleAction.name}`,
-        trigger_action: eventData.action_list?.[0]?.action || 'unknown',
-        record_id: matchedRecordId,
-        operator_openid: operatorOpenId || null,
-        record_snapshot: { fields },
-        status: actionResult.success ? 'success' : 'failed',
-        error_message: actionResult.error || null,
-        duration_ms: actionResult.durationMs,
-        response: actionResult.response || null,
-      })
-
-      if (!actionResult.success && rule.on_failure === 'stop') {
-        break
-      }
-    }
-  }
-}
-
 async function processEvent(rawEvent: unknown, version: string) {
   const traceId = createEventTraceId()
   const log = createFeishuLogger(traceId)
@@ -236,10 +161,6 @@ async function processEvent(rawEvent: unknown, version: string) {
         eventType,
         version,
       })
-
-      if (sourceStats['legacy-fallback'] > 0) {
-        log.warn(`命中 ${sourceStats['legacy-fallback']} 个兼容兜底工作流，请尽快补齐 scope 字段`)
-      }
 
       const executionResults = await Promise.allSettled(
         workflowCandidates.map(async ({ workflow, source }) => {
@@ -300,14 +221,6 @@ async function processEvent(rawEvent: unknown, version: string) {
     }
   } catch (error) {
     log.error('工作流引擎处理异常:', error)
-  }
-
-  if (LEGACY_RULES_REALTIME_ENABLED) {
-    try {
-      await executeLegacyRules(parsedEvent, traceId, log)
-    } catch (error) {
-      log.error('legacy rules 执行异常:', error)
-    }
   }
 
   if (eventId) {
@@ -374,12 +287,7 @@ export const startEventListener = async () => {
   const log = createFeishuLogger('START')
 
   try {
-    if (LEGACY_RULES_REALTIME_ENABLED) {
-      log.warn('LEGACY_RULES_REALTIME_ENABLED=true，旧 rules 链路将参与 realtime 处理（回滚模式）')
-      registerActions()
-    } else {
-      log.info('workflow-only 模式已启用，旧 rules realtime 链路已关闭')
-    }
+    log.info('workflow-only 模式已启用')
 
     log.info('正在启动长连接...')
 

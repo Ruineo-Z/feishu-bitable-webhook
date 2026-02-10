@@ -1,6 +1,6 @@
 # Workflow-only 预发布联调清单
 
-> 目标：在预发布环境验证 workflow-only 主链路、字段映射 registry 与回滚开关行为，完成 OpenSpec `5.2/5.4` 的前置证据。
+> 目标：在预发布环境验证 workflow-only 主链路、字段映射 registry 与核心动作可用性，完成 OpenSpec `5.2/5.4` 的前置证据。
 
 ## 0. 测试范围与通过标准
 
@@ -9,7 +9,7 @@
   - 字段映射（`field_id -> field_name`）
   - workflow 动作插件（create/update/delete/query）
   - 执行日志可观测性
-  - 回滚开关有效性
+  - 旧链路移除后的行为一致性
 - 通过标准：
   - 所有阻断项（标记为 **P0**）必须通过
   - 失败项需有明确原因和补救记录
@@ -21,7 +21,6 @@
 - [ ] 1.1 环境变量确认
   - [ ] `SUPABASE_URL`、`SUPABASE_KEY` 正确
   - [ ] `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 正确
-  - [ ] `LEGACY_RULES_REALTIME_ENABLED=false`（workflow-only）
 - [ ] 1.2 数据库迁移执行
   - [ ] 执行 `supabase/migrations/workflow_field_mapping_registry.sql`
   - [ ] 确认存在表 `public.bitable_field_mappings`
@@ -46,9 +45,6 @@
 - [ ] 2.2 查询映射
   - [ ] 调用 `GET /api/mappings?appToken=...&tableId=...`
   - [ ] 返回包含 `mappings`，字段 ID 与字段名对应正确
-- [ ] 2.3 旧接口兼容
-  - [ ] 调用 `POST /api/bitables/{id}/refresh-fields`
-  - [ ] 返回成功，且 Swagger 中显示 deprecated
 
 ---
 
@@ -96,21 +92,18 @@
   - [ ] 故意制造一个失败 step
   - [ ] 日志中可见失败原因，不出现静默失败
 - [ ] 5.3 路由日志检查
-  - [ ] 控制台出现候选命中统计（table/global/legacy-fallback）
+  - [ ] 控制台出现候选命中统计（table/global）
 
 ---
 
-## 6. 回滚演练（P0）
+## 6. 旧链路移除确认（P0）
 
-- [ ] 6.1 打开回滚开关
-  - [ ] 设置 `LEGACY_RULES_REALTIME_ENABLED=true`
-  - [ ] 重启服务
-- [ ] 6.2 验证回滚行为
-  - [ ] 控制台出现 `旧 rules 链路将参与 realtime 处理`
-  - [ ] 触发事件后，legacy rules 可执行
-- [ ] 6.3 恢复 workflow-only
-  - [ ] 设置 `LEGACY_RULES_REALTIME_ENABLED=false`
-  - [ ] 重启服务并确认恢复
+- [ ] 6.1 确认仅 workflow-only 主链路执行
+  - [ ] 触发事件后，执行日志仅出现 workflow 结果
+- [ ] 6.2 确认旧映射接口已下线
+  - [ ] `POST /api/bitables/{id}/refresh-fields` 返回 404（或不存在于 `/doc`）
+- [ ] 6.3 确认 workflow-only 文档一致
+  - [ ] `/doc` 仅包含 `/api/mappings` 与 `/api/mappings/refresh` 映射接口
 
 ---
 
@@ -133,6 +126,6 @@
 2. 第 2 节（映射 API）
 3. 第 3 节（核心动作）
 4. 第 4 节（异常场景）
-5. 第 6 节（回滚）
+5. 第 6 节（旧链路移除）
 6. 第 5 节（日志补查）
 7. 第 7 节（验收记录）

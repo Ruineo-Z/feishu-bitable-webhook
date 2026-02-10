@@ -5,7 +5,6 @@ import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi'
 import { swaggerUI } from '@hono/swagger-ui'
 import { startEventListener } from './lark'
 import { executionLogsDb } from './db/execution-logs'
-import { bitablesDb } from './db/bitables'
 import { fieldMappingsDb } from './db/field-mappings'
 import { refreshFieldMappingsByTable } from './services/field-mappings'
 import registerWorkflowRoutes from './routes/workflow'
@@ -379,71 +378,6 @@ app.openapi(
       return ok(c, result, '刷新字段映射成功')
     } catch (error) {
       return err(c, 'FIELD_MAPPING_REFRESH_FAILED', '刷新字段映射失败', 500, error)
-    }
-  }) as any
-)
-
-const LegacyRefreshFieldsSchema = z.object({
-  id: z.string().describe('多维表格配置 ID（旧接口入参）'),
-})
-
-app.openapi(
-  createRoute({
-    method: 'post',
-    path: '/api/bitables/{id}/refresh-fields',
-    tags: ['Bitables'],
-    summary: '（已弃用）刷新多维表格字段映射',
-    description:
-      '旧接口：根据 bitable 配置 ID 刷新映射。建议改用 POST /api/mappings/refresh（app_token + table_id）。',
-    deprecated: true,
-    request: {
-      params: LegacyRefreshFieldsSchema,
-    },
-    responses: {
-      200: {
-        description: '刷新成功',
-        content: {
-          'application/json': {
-            schema: MappingRefreshSuccessSchema,
-          },
-        },
-      },
-      404: {
-        description: '多维表格配置不存在',
-        content: {
-          'application/json': {
-            schema: ErrorEnvelopeSchema,
-          },
-        },
-      },
-      500: {
-        description: '刷新失败',
-        content: {
-          'application/json': {
-            schema: ErrorEnvelopeSchema,
-          },
-        },
-      },
-    },
-  }),
-  (async (c: any) => {
-    const { id } = c.req.valid('param')
-    const bitable = await bitablesDb.findById(id)
-    if (!bitable) {
-      return err(c, 'BITABLE_NOT_FOUND', '多维表格配置不存在', 404)
-    }
-
-    try {
-      const result = await refreshFieldMappingsByTable(bitable.app_token, bitable.table_id)
-
-      // 兼容更新旧字段，便于过渡期工具继续工作
-      await bitablesDb.update(id, {
-        field_mappings: result.mappings,
-      })
-
-      return ok(c, result, '刷新字段映射成功（旧接口，建议迁移）')
-    } catch (error) {
-      return err(c, 'REFRESH_FIELDS_FAILED', '刷新字段映射失败', 500, error)
     }
   }) as any
 )

@@ -42,7 +42,6 @@ HTTP 请求
       ├── /api/logs
       ├── /api/mappings
       ├── /api/mappings/refresh
-      ├── /api/bitables/{id}/refresh-fields (deprecated)
       ├── /doc + /docs
       └── /ui/workflows
 ```
@@ -108,8 +107,6 @@ FEISHU_APP_SECRET=your_app_secret
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your_service_role_key
 
-# 可选：回滚开关（true 时启用 legacy rules realtime）
-LEGACY_RULES_REALTIME_ENABLED=false
 ```
 
 ## API Endpoints
@@ -128,12 +125,6 @@ LEGACY_RULES_REALTIME_ENABLED=false
 |--------|------|-------------|
 | GET | `/api/mappings?appToken=...&tableId=...` | 查询字段映射 registry |
 | POST | `/api/mappings/refresh` | 按 `appToken + tableId` 刷新字段映射 |
-
-### 兼容接口（弃用）
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/bitables/{id}/refresh-fields` | 旧映射刷新接口，建议迁移到 `/api/mappings/refresh` |
 
 ### Swagger UI
 

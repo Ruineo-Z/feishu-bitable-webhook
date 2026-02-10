@@ -3,8 +3,6 @@ import { WorkflowConfig } from '../workflow/types';
 import {
   WorkflowScopeInput,
   WorkflowScopeType,
-  WorkflowScopeDbFields,
-  matchLegacyWorkflowByTriggerConfig,
   toDbScopeFields,
 } from '../workflow/scope';
 
@@ -37,7 +35,7 @@ export interface WorkflowFilter {
   offset?: number;
 }
 
-export type WorkflowMatchSource = 'table' | 'global' | 'legacy-fallback';
+export type WorkflowMatchSource = 'table' | 'global';
 
 export interface WorkflowCandidate {
   workflow: WorkflowRecord;
@@ -47,9 +45,6 @@ export interface WorkflowCandidate {
 export interface WorkflowCandidateBuildInput {
   tableScoped: WorkflowRecord[];
   globalScoped: WorkflowRecord[];
-  legacyScoped: WorkflowRecord[];
-  appToken: string;
-  tableId: string;
 }
 
 export function buildScopedWorkflowCandidates(input: WorkflowCandidateBuildInput): WorkflowCandidate[] {
@@ -63,14 +58,7 @@ export function buildScopedWorkflowCandidates(input: WorkflowCandidateBuildInput
     source: 'global' as const,
   }));
 
-  const legacyCandidates = input.legacyScoped
-    .filter((workflow) => matchLegacyWorkflowByTriggerConfig(workflow.config, input.appToken, input.tableId))
-    .map((workflow) => ({
-      workflow,
-      source: 'legacy-fallback' as const,
-    }));
-
-  return [...tableCandidates, ...globalCandidates, ...legacyCandidates];
+  return [...tableCandidates, ...globalCandidates];
 }
 
 export function summarizeWorkflowCandidateSources(candidates: WorkflowCandidate[]): Record<WorkflowMatchSource, number> {
@@ -82,14 +70,13 @@ export function summarizeWorkflowCandidateSources(candidates: WorkflowCandidate[
     {
       table: 0,
       global: 0,
-      'legacy-fallback': 0,
     } as Record<WorkflowMatchSource, number>,
   );
 }
 
 export const workflowsDb = {
   /**
-   * Fetch all active workflows (legacy internal use)
+   * Fetch all active workflows
    */
   async findActive(): Promise<WorkflowConfig[]> {
     const { data, error } = await getSupabase()
@@ -151,10 +138,10 @@ export const workflowsDb = {
   },
 
   /**
-   * Find event candidates by table scope + global scope + legacy fallback
+   * Find event candidates by table scope + global scope
    */
   async findCandidatesByScope(appToken: string, tableId: string): Promise<WorkflowCandidate[]> {
-    const [tableScopedResult, globalScopedResult, legacyScopedResult] = await Promise.all([
+    const [tableScopedResult, globalScopedResult] = await Promise.all([
       getSupabase()
         .from('workflows')
         .select('*')
@@ -169,24 +156,14 @@ export const workflowsDb = {
         .eq('is_active', true)
         .eq('scope_type', 'global')
         .order('created_at', { ascending: true }),
-      getSupabase()
-        .from('workflows')
-        .select('*')
-        .eq('is_active', true)
-        .is('scope_type', null)
-        .order('created_at', { ascending: true }),
     ]);
 
     if (tableScopedResult.error) throw tableScopedResult.error;
     if (globalScopedResult.error) throw globalScopedResult.error;
-    if (legacyScopedResult.error) throw legacyScopedResult.error;
 
     return buildScopedWorkflowCandidates({
       tableScoped: (tableScopedResult.data || []) as WorkflowRecord[],
       globalScoped: (globalScopedResult.data || []) as WorkflowRecord[],
-      legacyScoped: (legacyScopedResult.data || []) as WorkflowRecord[],
-      appToken,
-      tableId,
     });
   },
 
