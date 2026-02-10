@@ -6,7 +6,11 @@
     "dev": "bun --watch start-local.mjs",
     "start": "bun start-local.mjs",
     "build": "tsup",
-    "backfill:workflow-scope": "bun scripts/backfill-workflow-scope.ts"
+    "backfill:workflow-scope": "bun scripts/backfill-workflow-scope.ts",
+    "backfill:workflow-trigger-actions": "bun scripts/backfill-workflow-trigger-actions.ts",
+    "test:workflow:scope-routing": "npx tsx tests/workflow/scope-routing.test.ts",
+    "test:workflow:scope-migration": "npx tsx tests/workflow/scope-migration.test.ts",
+    "test:workflow:branching": "npx tsx tests/workflow/branching-engine.test.ts"
   },
   "dependencies": {
     "@hono/swagger-ui": "^0.4.0",

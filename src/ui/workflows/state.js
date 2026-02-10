@@ -8,16 +8,47 @@ export function createDefaultConfigTemplate() {
         config: {
           app_token: '',
           table_id: '',
-          action: 'record_updated',
+          actions: ['record_updated'],
         },
       },
       steps: [
         {
-          id: 'step_notify_1',
-          type: 'send-feishu-message',
-          name: '发送通知',
+          id: 'step_condition_1',
+          type: 'condition',
+          name: '判断状态是否为已完成',
           config: {
-            message: '检测到多维表格记录变更',
+            logic: 'AND',
+            expressions: [
+              {
+                field: '状态',
+                operator: 'equals',
+                value: '已完成',
+              },
+            ],
+          },
+          onTrue: 'step_notify_done',
+          onFalse: 'step_notify_pending',
+        },
+        {
+          id: 'step_notify_done',
+          type: 'action.feishu.message',
+          name: '通知完成',
+          config: {
+            receive_id: 'ou_xxx',
+            receive_id_type: 'open_id',
+            msg_type: 'text',
+            content: '{"text":"记录已完成：${trigger.record.fields.标题}"}',
+          },
+        },
+        {
+          id: 'step_notify_pending',
+          type: 'action.feishu.message',
+          name: '通知待处理',
+          config: {
+            receive_id: 'ou_xxx',
+            receive_id_type: 'open_id',
+            msg_type: 'text',
+            content: '{"text":"记录未完成：${trigger.record.fields.标题}"}',
           },
         },
       ],

@@ -7,6 +7,9 @@ const FRIENDLY_ERROR_MESSAGES = {
   WORKFLOW_DELETE_FAILED: '删除失败，请稍后再试。',
   WORKFLOW_LIST_FAILED: '加载工作流列表失败，请检查服务与数据库连接。',
   WORKFLOW_GET_FAILED: '获取工作流详情失败，请稍后重试。',
+  WORKFLOW_SCOPE_TABLE_REQUIRED: 'scope 必须是 table，且必须包含 appToken 与 tableId。',
+  WORKFLOW_EVENT_TYPES_INVALID: 'eventTypes 只支持 record_created/record_updated/record_deleted（可用别名 add/update/remove）。',
+  WORKFLOW_EVENT_TYPES_CONFLICT: 'scope.eventTypes 与 trigger.config.action/actions 冲突，请保持一致。',
 }
 
 export class ApiError extends Error {

@@ -106,7 +106,18 @@
             </div>
 
             <label>
-              工作流 DSL（JSON）
+              eventTypes（可选）
+              <input
+                id="scope-event-types"
+                name="eventTypes"
+                type="text"
+                placeholder="record_created, record_updated, record_deleted"
+              />
+              <small class="help-text">可留空（表示匹配该表全部事件）；支持别名 add/update/remove。</small>
+            </label>
+
+            <label>
+              Workflow DSL（支持 DAG 分支，JSON）
               <textarea
                 id="workflow-config"
                 name="config"

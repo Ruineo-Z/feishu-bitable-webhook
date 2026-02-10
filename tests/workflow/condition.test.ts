@@ -20,7 +20,8 @@ async function testCondition(name: string, config: any, contextData: any, expect
   // condition plugin returns success: true, output: { pass: true/false }
   // OR success: false (if failed) which means pass: false in engine logic
 
-  const passed = result.success && result.output?.pass === true;
+  const passValue = (result.output as any)?.data?.pass ?? (result.output as any)?.pass;
+  const passed = result.success && passValue === true;
 
   if (passed === expectedPass) {
     console.log(`✅ ${name}`);

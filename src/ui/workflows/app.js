@@ -23,6 +23,18 @@ import {
   resetFormValues,
 } from './view.js'
 
+const UI_EVENT_TYPE_ALIASES = {
+  record_created: 'record_created',
+  record_added: 'record_created',
+  add: 'record_created',
+  record_updated: 'record_updated',
+  record_edited: 'record_updated',
+  update: 'record_updated',
+  record_deleted: 'record_deleted',
+  remove: 'record_deleted',
+  delete: 'record_deleted',
+}
+
 const state = createInitialState()
 const defaultConfigText = createDefaultConfigTemplate()
 
@@ -44,6 +56,7 @@ const elements = {
   scopeBindingFields: document.getElementById('scope-binding-fields'),
   scopeAppToken: document.getElementById('scope-app-token'),
   scopeTableId: document.getElementById('scope-table-id'),
+  scopeEventTypes: document.getElementById('scope-event-types'),
   workflowConfig: document.getElementById('workflow-config'),
   submitBtn: document.getElementById('submit-btn'),
   resetFormBtn: document.getElementById('reset-form-btn'),
@@ -72,6 +85,42 @@ function resetFormForCreateMode() {
   renderFormMode(elements, state)
 }
 
+function normalizeEventType(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized) return null
+  return UI_EVENT_TYPE_ALIASES[normalized] || null
+}
+
+function parseEventTypesInput(rawInput) {
+  const text = String(rawInput || '').trim()
+  if (!text) {
+    return []
+  }
+
+  const rawTokens = text
+    .split(/[\n,，]/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+
+  const normalized = []
+  const invalid = []
+
+  for (const token of rawTokens) {
+    const normalizedEventType = normalizeEventType(token)
+    if (normalizedEventType) {
+      normalized.push(normalizedEventType)
+      continue
+    }
+    invalid.push(token)
+  }
+
+  if (invalid.length > 0) {
+    throw new Error(`eventTypes 存在不支持的值：${Array.from(new Set(invalid)).join(', ')}`)
+  }
+
+  return Array.from(new Set(normalized))
+}
+
 function validateAndBuildPayload() {
   const name = elements.workflowName.value.trim()
   if (!name) {
@@ -80,18 +129,18 @@ function validateAndBuildPayload() {
 
   const configText = elements.workflowConfig.value.trim()
   if (!configText) {
-    throw new Error('请填写工作流 DSL（JSON）。')
+    throw new Error('请填写 Workflow DSL（支持 DAG 分支，JSON）。')
   }
 
   let config = null
   try {
     config = JSON.parse(configText)
   } catch {
-    throw new Error('工作流 DSL JSON 格式不正确，请先修复语法错误。')
+    throw new Error('Workflow DSL JSON 格式不正确，请先修复语法错误。')
   }
 
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
-    throw new Error('工作流 DSL 必须是 JSON 对象。')
+    throw new Error('Workflow DSL 必须是 JSON 对象。')
   }
 
   const scopeType = elements.scopeType.value
@@ -106,10 +155,16 @@ function validateAndBuildPayload() {
     throw new Error('table 作用域必须填写 appToken 和 tableId。')
   }
 
+  const eventTypes = parseEventTypesInput(elements.scopeEventTypes.value)
+
   const scope = {
     type: 'table',
     appToken,
     tableId,
+  }
+
+  if (eventTypes.length > 0) {
+    scope.eventTypes = eventTypes
   }
 
   return {

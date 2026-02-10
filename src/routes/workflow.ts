@@ -2,8 +2,13 @@ import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi'
 import { workflowsDb, WorkflowRecord, WorkflowSummaryRecord } from '../db/workflows'
 import { WorkflowConfigSchema } from '../workflow/dsl/schema'
 import {
+  WORKFLOW_EVENT_TYPES,
+  WORKFLOW_SCOPE_EVENT_TYPES_INVALID,
+  WORKFLOW_SCOPE_TABLE_BINDING_REQUIRED,
+  WORKFLOW_SCOPE_TRIGGER_EVENT_TYPES_CONFLICT,
+  WorkflowEventType,
   WorkflowScopeInput,
-  applyScopeToWorkflowConfig,
+  normalizeScopeAndTriggerConfig,
   resolveScopeFromRecord,
   toDbScopeFields,
 } from '../workflow/scope'
@@ -17,27 +22,128 @@ const WorkflowListQuerySchema = z.object({
   offset: z.coerce.number().optional().default(0).describe('分页偏移量，默认 0'),
 })
 
+const WorkflowEventTypeSchema = z.enum(WORKFLOW_EVENT_TYPES)
+
 const WorkflowScopeSchema = z
   .object({
     type: z.literal('table').describe('表级作用域（仅支持 table）'),
     appToken: z.string().min(1).describe('绑定 app_token（示例：KaWjbBvGeaG0Fus5bwWcKLsJnfb）'),
     tableId: z.string().min(1).describe('绑定 table_id（示例：tblhV7wQW9uqdkMd）'),
+    eventTypes: z
+      .array(WorkflowEventTypeSchema)
+      .optional()
+      .describe('可选事件过滤，未配置表示匹配该表全部记录事件'),
   })
   .describe('工作流作用域配置（仅支持 table 作用域）')
 
 const CreateWorkflowSchema = z.object({
   name: z.string().describe('工作流名称'),
-  config: WorkflowConfigSchema.describe('工作流 DSL 配置'),
+  config: WorkflowConfigSchema.describe('Workflow DSL（支持 DAG 分支）配置'),
   scope: WorkflowScopeSchema.describe('工作流作用域（必填，仅支持 table）'),
   isActive: z.boolean().optional().default(true).describe('是否启用，默认 true'),
 })
 
 const UpdateWorkflowSchema = z.object({
   name: z.string().optional().describe('工作流名称'),
-  config: WorkflowConfigSchema.optional().describe('工作流 DSL 配置'),
+  config: WorkflowConfigSchema.optional().describe('Workflow DSL（支持 DAG 分支）配置'),
   scope: WorkflowScopeSchema.optional().describe('工作流作用域（更新后会同步到 config.trigger.config）'),
   isActive: z.boolean().optional().describe('是否启用'),
 })
+
+const WorkflowCreateExamples = {
+  tableAllEvents: {
+    summary: 'table scope（匹配全部事件）',
+    value: {
+      name: '创建后通知',
+      scope: {
+        type: 'table',
+        appToken: 'app_token_demo',
+        tableId: 'tbl_demo',
+      },
+      isActive: true,
+      config: {
+        id: 'wf_create_notify',
+        name: '创建后通知',
+        trigger: {
+          type: 'lark.bitable.record.changed',
+          config: {
+            app_token: 'app_token_demo',
+            table_id: 'tbl_demo',
+          },
+        },
+        steps: [
+          {
+            id: 'step_notify',
+            type: 'action.feishu.message',
+            config: {
+              receive_id: 'ou_xxx',
+              receive_id_type: 'open_id',
+              msg_type: 'text',
+              content: '{"text":"记录发生变化：${trigger.record.fields.标题}"}',
+            },
+          },
+        ],
+      },
+    },
+  },
+  tableWithEventTypesAndBranching: {
+    summary: 'table scope + eventTypes + if/else 分支',
+    value: {
+      name: '更新状态分支通知',
+      scope: {
+        type: 'table',
+        appToken: 'app_token_demo',
+        tableId: 'tbl_demo',
+        eventTypes: ['record_updated'],
+      },
+      isActive: true,
+      config: {
+        id: 'wf_branching_notify',
+        name: '更新状态分支通知',
+        trigger: {
+          type: 'lark.bitable.record.changed',
+          config: {
+            app_token: 'app_token_demo',
+            table_id: 'tbl_demo',
+            actions: ['record_updated'],
+          },
+        },
+        steps: [
+          {
+            id: 'step_condition',
+            type: 'condition',
+            config: {
+              logic: 'AND',
+              expressions: [{ field: '状态', operator: 'equals', value: '已完成' }],
+            },
+            onTrue: 'step_notify_done',
+            onFalse: 'step_notify_pending',
+          },
+          {
+            id: 'step_notify_done',
+            type: 'action.feishu.message',
+            config: {
+              receive_id: 'ou_xxx',
+              receive_id_type: 'open_id',
+              msg_type: 'text',
+              content: '{"text":"记录已完成：${trigger.record.fields.标题}"}',
+            },
+          },
+          {
+            id: 'step_notify_pending',
+            type: 'action.feishu.message',
+            config: {
+              receive_id: 'ou_xxx',
+              receive_id_type: 'open_id',
+              msg_type: 'text',
+              content: '{"text":"记录未完成：${trigger.record.fields.标题}"}',
+            },
+          },
+        ],
+      },
+    },
+  },
+}
 
 const WorkflowIdParamSchema = z.object({
   id: z.string().describe('工作流 ID'),
@@ -119,7 +225,15 @@ function toWorkflowDetailResponse(record: WorkflowRecord) {
 }
 
 function isTableScopeRequiredError(error: unknown): boolean {
-  return error instanceof Error && error.message === 'WORKFLOW_SCOPE_TABLE_BINDING_REQUIRED'
+  return error instanceof Error && error.message === WORKFLOW_SCOPE_TABLE_BINDING_REQUIRED
+}
+
+function isEventTypesInvalidError(error: unknown): boolean {
+  return error instanceof Error && error.message === WORKFLOW_SCOPE_EVENT_TYPES_INVALID
+}
+
+function isEventTypesConflictError(error: unknown): boolean {
+  return error instanceof Error && error.message === WORKFLOW_SCOPE_TRIGGER_EVENT_TYPES_CONFLICT
 }
 
 // --- Routes Registration ---
@@ -246,12 +360,13 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
       path: '/api/workflows',
       tags: ['Workflows'],
       summary: '创建工作流',
-      description: '根据请求体中的名称、DSL 配置与 table 作用域创建新工作流。',
+      description: '根据请求体中的名称、Workflow DSL（支持 DAG 分支）配置与 table 作用域创建新工作流。支持可选 eventTypes 过滤。',
       request: {
         body: {
           content: {
             'application/json': {
               schema: CreateWorkflowSchema,
+              examples: WorkflowCreateExamples,
             },
           },
         },
@@ -288,19 +403,27 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
 
       try {
         const scope = body.scope as WorkflowScopeInput
-        const normalizedConfig = applyScopeToWorkflowConfig(body.config, scope)
+        const normalized = normalizeScopeAndTriggerConfig(body.config, scope)
 
         const workflow = await workflowsDb.create(
           body.name,
-          normalizedConfig,
+          normalized.config,
           body.isActive,
-          scope,
+          normalized.scope,
         )
 
         return ok(c, toWorkflowDetailResponse(workflow), '创建工作流成功', 201)
       } catch (error) {
         if (isTableScopeRequiredError(error)) {
           return err(c, 'WORKFLOW_SCOPE_TABLE_REQUIRED', '仅支持 table 作用域，必须提供 appToken 与 tableId', 400)
+        }
+
+        if (isEventTypesInvalidError(error)) {
+          return err(c, 'WORKFLOW_EVENT_TYPES_INVALID', 'eventTypes 包含不支持的事件类型', 400)
+        }
+
+        if (isEventTypesConflictError(error)) {
+          return err(c, 'WORKFLOW_EVENT_TYPES_CONFLICT', 'scope.eventTypes 与 trigger.config.action/actions 配置冲突', 400)
         }
 
         return err(c, 'WORKFLOW_CREATE_FAILED', '创建工作流失败', 500)
@@ -316,13 +439,14 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
       tags: ['Workflows'],
       summary: '更新工作流',
       description:
-        '根据工作流 ID 更新名称、配置、作用域或启用状态。更新时会保证 scope 与 config.trigger.config 一致。',
+        '根据工作流 ID 更新名称、配置、作用域或启用状态。更新时会保证 scope、trigger.config 与 trigger_actions 一致。',
       request: {
         params: WorkflowIdParamSchema,
         body: {
           content: {
             'application/json': {
               schema: UpdateWorkflowSchema,
+              examples: WorkflowCreateExamples,
             },
           },
         },
@@ -375,8 +499,11 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
         const effectiveScope: WorkflowScopeInput =
           (body.scope as WorkflowScopeInput | undefined) || resolveScopeFromRecord(existing)
         const sourceConfig = body.config || existing.config
-        const normalizedConfig = applyScopeToWorkflowConfig(sourceConfig, effectiveScope)
-        const scopeFields = toDbScopeFields(effectiveScope)
+        const strictConflict = body.scope !== undefined && body.config !== undefined
+        const normalized = normalizeScopeAndTriggerConfig(sourceConfig, effectiveScope, {
+          strictConflict,
+        })
+        const scopeFields = toDbScopeFields(normalized.scope)
 
         const updates: {
           name?: string
@@ -385,11 +512,13 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
           scope_type: 'table'
           app_token: string
           table_id: string
+          trigger_actions: WorkflowEventType[] | null
         } = {
-          config: normalizedConfig,
+          config: normalized.config,
           scope_type: scopeFields.scope_type,
           app_token: scopeFields.app_token,
           table_id: scopeFields.table_id,
+          trigger_actions: scopeFields.trigger_actions,
         }
 
         if (body.name !== undefined) updates.name = body.name
@@ -405,6 +534,14 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
       } catch (error) {
         if (isTableScopeRequiredError(error)) {
           return err(c, 'WORKFLOW_SCOPE_TABLE_REQUIRED', '仅支持 table 作用域，必须提供 appToken 与 tableId', 400)
+        }
+
+        if (isEventTypesInvalidError(error)) {
+          return err(c, 'WORKFLOW_EVENT_TYPES_INVALID', 'eventTypes 包含不支持的事件类型', 400)
+        }
+
+        if (isEventTypesConflictError(error)) {
+          return err(c, 'WORKFLOW_EVENT_TYPES_CONFLICT', 'scope.eventTypes 与 trigger.config.action/actions 配置冲突', 400)
         }
 
         return err(c, 'WORKFLOW_UPDATE_FAILED', '更新工作流失败', 500)

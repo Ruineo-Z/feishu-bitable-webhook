@@ -13,8 +13,9 @@
 ## Features
 
 - 飞书多维表格 WebSocket 长连接事件监听
-- Workflow scope 路由（table-only）
+- Workflow scope 路由（table + optional eventTypes）
 - Workflow 插件动作（消息发送 / 记录增删改查）
+- Workflow DSL（支持 DAG 分支：condition onTrue/onFalse + next）
 - 字段映射 registry（`field_id -> field_name`）
 - 执行日志查询
 
@@ -29,7 +30,7 @@ Feishu Bitable Events (WS)
    src/lark.ts 事件接入层
           │
           ├── workflow 路由与执行
-          │     ├── scope 候选检索（table）
+          │     ├── scope 候选检索（table + eventTypes）
           │     ├── 字段映射转换（field_id -> field_name）
           │     └── Workflow Engine + Plugins
           │
@@ -51,7 +52,7 @@ HTTP 请求
 ```text
 飞书记录事件 -> parseFeishuEvent -> processEvent
   1) 按 app_token + table_id 查询字段映射并转换字段键
-  2) 按 scope 查询候选 workflows
+  2) 按 scope + eventTypes 查询候选 workflows
   3) 执行 workflow steps（condition / action.*）
   4) 异步写 execution_logs
 ```
@@ -134,6 +135,17 @@ SUPABASE_KEY=your_service_role_key
 
 启动服务后访问：`http://localhost:3000/ui/workflows`
 
+
+## Migration Scripts
+
+```bash
+# scope 字段回填（table 绑定 + trigger_actions）
+bun run backfill:workflow-scope
+
+# 事件过滤结构化字段回填（trigger.config.action/actions -> trigger_actions）
+bun run backfill:workflow-trigger-actions
+```
+
 ## Database Schema
 
 ### workflows 表
@@ -142,11 +154,12 @@ SUPABASE_KEY=your_service_role_key
 |--------|------|-------------|
 | id | uuid | 主键 |
 | name | text | 工作流名称 |
-| config | jsonb | workflow DSL |
+| config | jsonb | Workflow DSL（支持 DAG 分支） |
 | is_active | boolean | 是否启用 |
 | scope_type | text | 作用域类型（仅 table） |
 | app_token | text | table 作用域绑定 app_token |
 | table_id | text | table 作用域绑定 table_id |
+| trigger_actions | text[] | 可选事件过滤（record_created/record_updated/record_deleted），NULL 表示通配 |
 | created_at | timestamptz | 创建时间 |
 | updated_at | timestamptz | 更新时间 |
 
@@ -182,8 +195,14 @@ SUPABASE_KEY=your_service_role_key
 ## Testing
 
 ```bash
-# 工作流路由与作用域
+# 工作流路由与作用域（含 eventTypes）
 npx tsx tests/workflow/scope-routing.test.ts
+
+# scope 与事件过滤迁移回填
+npx tsx tests/workflow/scope-migration.test.ts
+
+# 分支执行与 DAG 校验
+npx tsx tests/workflow/branching-engine.test.ts
 
 # 条件插件
 npx tsx tests/workflow/condition.test.ts

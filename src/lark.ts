@@ -7,6 +7,11 @@ import { parseFeishuEvent, ParsedEvent } from './parser'
 import { getSupabase } from './db/client'
 import { WorkflowEngine } from './workflow/core/engine'
 import { WorkflowConfig } from './workflow/types'
+import {
+  WorkflowEventType,
+  normalizeWorkflowEventType,
+  resolveWorkflowEventTypes,
+} from './workflow/scope'
 import { registerStandardPlugins } from './workflow/plugins'
 import { workflowsDb, summarizeWorkflowCandidateSources } from './db/workflows'
 
@@ -69,64 +74,16 @@ function normalizeTriggerAction(eventType: ParsedEvent['eventType']): string {
   return eventType
 }
 
-
-function normalizeWorkflowEventType(value: unknown): ParsedEvent['eventType'] | null {
-  if (typeof value !== 'string') return null
-
-  switch (value.trim().toLowerCase()) {
-    case 'record_created':
-    case 'record_added':
-    case 'add':
-      return 'record_created'
-    case 'record_updated':
-    case 'record_edited':
-    case 'update':
-      return 'record_updated'
-    case 'record_deleted':
-    case 'remove':
-    case 'delete':
-      return 'record_deleted'
-    default:
-      return null
-  }
-}
-
-function collectWorkflowEventTypes(workflowConfig: WorkflowConfig | null | undefined): ParsedEvent['eventType'][] {
-  const triggerConfig = workflowConfig?.trigger?.config
-
-  if (!triggerConfig || typeof triggerConfig !== 'object') {
-    return []
-  }
-
-  const config = triggerConfig as Record<string, unknown>
-  const rawValues: unknown[] = []
-  const candidates = [config.action, config.actions, config.eventType, config.eventTypes]
-
-  for (const item of candidates) {
-    if (Array.isArray(item)) {
-      rawValues.push(...item)
-    } else if (item !== undefined && item !== null) {
-      rawValues.push(item)
-    }
-  }
-
-  const normalized = rawValues
-    .map((item) => normalizeWorkflowEventType(item))
-    .filter((item): item is ParsedEvent['eventType'] => !!item)
-
-  return Array.from(new Set(normalized))
-}
-
 function shouldRunWorkflowForEvent(
   workflowConfig: WorkflowConfig | null | undefined,
   currentEventType: ParsedEvent['eventType'],
 ): boolean {
-  const configuredEventTypes = collectWorkflowEventTypes(workflowConfig)
-  if (configuredEventTypes.length === 0) {
+  const resolved = resolveWorkflowEventTypes({ config: workflowConfig })
+  if (!resolved.eventTypes || resolved.eventTypes.length === 0) {
     return true
   }
 
-  return configuredEventTypes.includes(currentEventType)
+  return resolved.eventTypes.includes(currentEventType)
 }
 
 async function mapFieldsByName(
@@ -211,25 +168,33 @@ async function processEvent(rawEvent: unknown, version: string) {
   }
 
   const triggerAction = normalizeTriggerAction(eventType)
+  const normalizedEventType: WorkflowEventType = normalizeWorkflowEventType(eventType) || eventType
 
   try {
-    const workflowCandidates = await workflowsDb.findCandidatesByScope(appToken, tableId)
+    const workflowCandidates = await workflowsDb.findCandidatesByScope(appToken, tableId, normalizedEventType)
     const sourceStats = summarizeWorkflowCandidateSources(workflowCandidates)
 
     if (workflowCandidates.length > 0) {
-      log.info(`匹配到 ${workflowCandidates.length} 个工作流候选`, {
-        sourceStats,
-        eventType,
-        version,
-      })
-
       const executableWorkflows = workflowCandidates.filter(({ workflow }) =>
         shouldRunWorkflowForEvent(workflow.config, eventType),
       )
 
       const skippedByEventType = workflowCandidates.length - executableWorkflows.length
+
+      log.info(`匹配到 ${workflowCandidates.length} 个工作流候选`, {
+        sourceStats,
+        eventType,
+        version,
+        routedCandidates: workflowCandidates.length,
+        executableCandidates: executableWorkflows.length,
+        skippedByEventType,
+      })
+
       if (skippedByEventType > 0) {
-        log.info(`按事件类型过滤后跳过 ${skippedByEventType} 个工作流`, { eventType })
+        log.warn('存在候选工作流在运行时 eventTypes 兜底过滤中被跳过，建议检查 trigger_actions 回填一致性', {
+          eventType,
+          skippedByEventType,
+        })
       }
 
       if (executableWorkflows.length === 0) {
@@ -271,6 +236,7 @@ async function processEvent(rawEvent: unknown, version: string) {
               response: {
                 workflowId: workflow.id,
                 source,
+                routedEventType: normalizedEventType,
                 steps: workflowContext.steps,
               },
             })

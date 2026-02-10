@@ -1,6 +1,7 @@
 import { getSupabase } from './client';
 import { WorkflowConfig } from '../workflow/types';
 import {
+  WorkflowEventType,
   WorkflowScopeInput,
   WorkflowScopeType,
   toDbScopeFields,
@@ -14,6 +15,7 @@ export interface WorkflowRecord {
   scope_type: WorkflowScopeType | null;
   app_token: string | null;
   table_id: string | null;
+  trigger_actions: WorkflowEventType[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -25,6 +27,7 @@ export interface WorkflowSummaryRecord {
   scope_type: WorkflowScopeType | null;
   app_token: string | null;
   table_id: string | null;
+  trigger_actions: WorkflowEventType[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -65,6 +68,10 @@ export function summarizeWorkflowCandidateSources(candidates: WorkflowCandidate[
   );
 }
 
+function buildEventTypeRoutingOrFilter(eventType: WorkflowEventType): string {
+  return `trigger_actions.is.null,trigger_actions.cs.{${eventType}}`;
+}
+
 export const workflowsDb = {
   /**
    * Fetch all active workflows
@@ -92,7 +99,7 @@ export const workflowsDb = {
   async findAll(filter: WorkflowFilter = {}): Promise<{ data: WorkflowSummaryRecord[]; total: number }> {
     let query = getSupabase()
       .from('workflows')
-      .select('id,name,is_active,scope_type,app_token,table_id,created_at,updated_at', { count: 'exact' });
+      .select('id,name,is_active,scope_type,app_token,table_id,trigger_actions,created_at,updated_at', { count: 'exact' });
 
     query = query
       .eq('scope_type', 'table')
@@ -144,8 +151,12 @@ export const workflowsDb = {
   /**
    * Find event candidates by table scope
    */
-  async findCandidatesByScope(appToken: string, tableId: string): Promise<WorkflowCandidate[]> {
-    const tableScopedResult = await getSupabase()
+  async findCandidatesByScope(
+    appToken: string,
+    tableId: string,
+    eventType?: WorkflowEventType,
+  ): Promise<WorkflowCandidate[]> {
+    let query = getSupabase()
       .from('workflows')
       .select('*')
       .eq('is_active', true)
@@ -153,6 +164,12 @@ export const workflowsDb = {
       .eq('app_token', appToken)
       .eq('table_id', tableId)
       .order('created_at', { ascending: true });
+
+    if (eventType) {
+      query = query.or(buildEventTypeRoutingOrFilter(eventType));
+    }
+
+    const tableScopedResult = await query;
 
     if (tableScopedResult.error) throw tableScopedResult.error;
 
@@ -195,7 +212,7 @@ export const workflowsDb = {
     updates: Partial<
       Pick<
         WorkflowRecord,
-        'name' | 'config' | 'is_active' | 'scope_type' | 'app_token' | 'table_id'
+        'name' | 'config' | 'is_active' | 'scope_type' | 'app_token' | 'table_id' | 'trigger_actions'
       >
     >,
   ): Promise<WorkflowRecord | null> {

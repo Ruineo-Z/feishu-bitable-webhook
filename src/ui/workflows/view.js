@@ -28,7 +28,10 @@ function formatScope(scope) {
 
   const appToken = scope.appToken || '-'
   const tableId = scope.tableId || '-'
-  return `table · ${appToken}/${tableId}`
+  const eventTypes = Array.isArray(scope.eventTypes) ? scope.eventTypes : []
+  const eventSummary = eventTypes.length > 0 ? eventTypes.join('/') : 'all-events'
+
+  return `table · ${appToken}/${tableId} · ${eventSummary}`
 }
 
 export function renderFeedback(elements, feedback) {
@@ -61,6 +64,9 @@ export function fillFormFromWorkflow(elements, workflow) {
   elements.scopeType.value = 'table'
   elements.scopeAppToken.value = workflow.scope?.appToken || ''
   elements.scopeTableId.value = workflow.scope?.tableId || ''
+  elements.scopeEventTypes.value = Array.isArray(workflow.scope?.eventTypes)
+    ? workflow.scope.eventTypes.join(', ')
+    : ''
 
   elements.workflowConfig.value = JSON.stringify(workflow.config || {}, null, 2)
   renderScopeBindingVisibility(elements)
@@ -72,6 +78,7 @@ export function resetFormValues(elements, defaultConfigText) {
   elements.scopeType.value = 'table'
   elements.scopeAppToken.value = ''
   elements.scopeTableId.value = ''
+  elements.scopeEventTypes.value = ''
   elements.workflowConfig.value = defaultConfigText
   renderScopeBindingVisibility(elements)
 }

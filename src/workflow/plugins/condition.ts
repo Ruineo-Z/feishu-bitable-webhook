@@ -22,16 +22,7 @@ export class ConditionPlugin implements IWorkflowPlugin {
 
     try {
       const pass = ConditionEvaluator.evaluate(condition, evalContext)
-      if (pass) {
-        return okStep({ pass: true }, Date.now() - startTime)
-      }
-
-      return errStep(
-        'CONDITION_NOT_MET',
-        'Condition not met',
-        Date.now() - startTime,
-        { pass: false },
-      )
+      return okStep({ pass }, Date.now() - startTime)
     } catch (error: any) {
       return errStep(
         'CONDITION_EVALUATION_ERROR',

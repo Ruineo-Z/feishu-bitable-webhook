@@ -1,6 +1,6 @@
 # Workflow-only 预发布联调清单
 
-> 目标：在预发布环境验证 workflow-only 主链路、字段映射 registry 与核心动作可用性，完成 OpenSpec `5.2/5.4` 的前置证据。
+> 目标：在预发布环境验证 workflow-only 主链路、字段映射 registry、eventTypes 路由与 Workflow DSL（支持 DAG 分支）可用性，完成 OpenSpec `5.2/5.4` 的前置证据。
 
 ## 0. 测试范围与通过标准
 
@@ -8,6 +8,7 @@
   - 事件路由（scope 命中）
   - 字段映射（`field_id -> field_name`）
   - workflow 动作插件（create/update/delete/query）
+  - eventTypes 路由过滤与分支执行
   - 执行日志可观测性
   - 旧链路移除后的行为一致性
 - 通过标准：
@@ -53,16 +54,22 @@
 - [ ] 3.1 table scope 命中验证
   - [ ] 创建一个 `scope=table` workflow（绑定目标 `app_token/table_id`）
   - [ ] 在该表新增/编辑记录，确认 workflow 被命中执行
-- [ ] 3.2 create 动作验证
+- [ ] 3.2 eventTypes 路由验证
+  - [ ] 创建 `scope.eventTypes=[record_updated]` workflow
+  - [ ] 触发新增事件不命中、触发更新事件命中
+- [ ] 3.3 分支流程验证
+  - [ ] condition 节点配置 `onTrue/onFalse`
+  - [ ] true/false 两条路径分别执行，且未选路径标记为 skipped
+- [ ] 3.4 create 动作验证
   - [ ] workflow step 使用 `action.bitable.create`
   - [ ] 确认目标表新增记录成功
-- [ ] 3.3 update 动作验证
+- [ ] 3.5 update 动作验证
   - [ ] workflow step 使用 `action.bitable.update`
   - [ ] 确认目标记录字段更新成功
-- [ ] 3.4 delete 动作验证
+- [ ] 3.6 delete 动作验证
   - [ ] workflow step 使用 `action.bitable.delete`
   - [ ] 通过 `record_id` 或 `filter` 删除成功
-- [ ] 3.5 query 动作验证
+- [ ] 3.7 query 动作验证
   - [ ] workflow step 使用 `action.bitable.query`
   - [ ] 返回 records/total/hasMore 结构正确
 
@@ -89,7 +96,7 @@
   - [ ] 故意制造一个失败 step
   - [ ] 日志中可见失败原因，不出现静默失败
 - [ ] 5.3 路由日志检查
-  - [ ] 控制台出现候选命中统计（table）
+  - [ ] 控制台出现候选命中统计（routedCandidates / executableCandidates / skippedByEventType）
 
 ---
 

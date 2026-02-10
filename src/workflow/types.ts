@@ -15,7 +15,9 @@ export interface WorkflowStep {
   type: string;
   name?: string;
   config: Record<string, unknown>;
-  next?: string; // ID of the next step
+  next?: string;
+  onTrue?: string;
+  onFalse?: string;
 }
 
 export interface WorkflowContext {
