@@ -67,7 +67,7 @@ HTTP 请求
 ### 启动时序（`bun run dev`）
 
 1. `bun --watch start-local.mjs` 启动开发模式。  
-2. `start-local.mjs` 加载 `src/index.ts` 并启动 `Bun.serve(:3000)`。  
+2. `start-local.mjs` 加载 `src/index.ts` 并启动 `Bun.serve(:3333)`。  
 3. `src/index.ts` 注册 HTTP 路由后调用 `startEventListener()`。  
 4. `startEventListener()` 会：
    - 注册 workflow 插件；
@@ -95,6 +95,16 @@ bun run dev
 
 # 生产模式
 bun run start
+
+# Workflow Studio（React 子项目）
+# 首次进入需安装子项目依赖
+npm --prefix web/workflow-studio install
+
+# 本地开发（前端 Vite）
+bun run ui:dev
+
+# 构建前端产物（供 /ui/workflows 使用）
+bun run ui:build
 ```
 
 ## Configuration
@@ -108,6 +118,12 @@ FEISHU_APP_SECRET=your_app_secret
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your_service_role_key
 
+```
+
+```env
+# Workflow UI 回退开关（可选）
+# true 时 /ui/workflows 使用旧版静态页面
+WORKFLOW_UI_LEGACY=false
 ```
 
 ## API Endpoints
@@ -129,11 +145,29 @@ SUPABASE_KEY=your_service_role_key
 
 ### Swagger UI
 
-启动服务后访问：`http://localhost:3000/docs`
+启动服务后访问：`http://localhost:3333/docs`
 
 ### Workflow 管理页面
 
-启动服务后访问：`http://localhost:3000/ui/workflows`
+启动服务后访问：`http://localhost:3333/ui/workflows`
+
+### Workflow UI 集成验证与回退
+
+```bash
+# 1) 安装并构建 React 子项目
+npm --prefix web/workflow-studio install
+bun run ui:build
+
+# 2) 启动后端（默认走 React 产物）
+bun run dev
+
+# 3) 浏览器验证
+# http://localhost:3333/ui/workflows
+
+# 4) 如需紧急回退到旧静态页面
+WORKFLOW_UI_LEGACY=true bun run dev
+# 再访问 http://localhost:3333/ui/workflows
+```
 
 
 ## Migration Scripts
@@ -209,11 +243,22 @@ npx tsx tests/workflow/condition.test.ts
 
 # Bitable 动作插件
 npx tsx tests/workflow/bitable-plugins.test.ts
+
+# Workflow Studio 适配层单测
+bun run test:workflow-studio:adapter
+
+# Workflow Studio 页面交互测试（Vitest）
+bun run ui:test
 ```
 
 ## Project Structure
 
 ```text
+web/workflow-studio/
+├── src/                     # React + TypeScript Workflow Studio
+├── vite.config.ts           # 前端构建配置（base=/ui/workflows/）
+└── package.json             # 子项目脚本（dev/build/test）
+
 src/
 ├── index.ts                 # HTTP 入口（API/Docs/UI 路由）
 ├── lark.ts                  # 飞书事件监听与 workflow-only 编排
