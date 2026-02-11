@@ -28,3 +28,13 @@ dist-ssr
 
 # Local generated artifacts
 tmp/
+
+# Local experiment assets
+.codex/
+design-system/
+src/ui/workflows/style-lab*
+
+# Workflow Studio generated artifacts
+web/workflow-studio/*.tsbuildinfo
+web/workflow-studio/vite.config.js
+web/workflow-studio/vite.config.d.ts
