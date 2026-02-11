@@ -57,6 +57,21 @@ class RecordActionPlugin implements IWorkflowPlugin {
   }
 }
 
+class MarkerPlugin implements IWorkflowPlugin {
+  constructor(private readonly marker: { called: boolean }) {}
+
+  async execute(_context: WorkflowContext, _config: Record<string, unknown>): Promise<StepResult> {
+    this.marker.called = true;
+    return {
+      success: true,
+      output: {
+        code: 'OK',
+        durationMs: 0,
+      },
+    };
+  }
+}
+
 function registerTestPlugins() {
   const registry = PluginRegistry.getInstance();
   registry.register('condition', new ConditionPlugin());
@@ -272,6 +287,159 @@ async function run() {
     const middleTransition = (context.steps.step_middle.output as any)?.data?.transition;
     expect(middleTransition.nextStepId).toBe('step_end');
     expect(middleTransition.type).toBe('explicit-next');
+  });
+
+  await runTest('guard 跳过：when=false 时跳过当前步骤并继续流程', async () => {
+    const marker = { called: false };
+    const registry = PluginRegistry.getInstance();
+    registry.register('test.guard', new MarkerPlugin(marker));
+    registry.register('test.follow', new RecordActionPlugin('follow-path'));
+
+    const workflow: WorkflowConfig = {
+      id: 'wf_guard_skip',
+      name: 'guard-skip',
+      trigger: {
+        type: 'lark.bitable.record.changed',
+        config: {
+          app_token: 'appA',
+          table_id: 'tbl1',
+        },
+      },
+      steps: [
+        {
+          id: 'step_guarded',
+          type: 'test.guard',
+          when: {
+            logic: 'AND',
+            expressions: [{ field: '负责人', operator: 'exists', source: 'before' }],
+          },
+          config: {},
+          next: 'step_follow',
+        },
+        {
+          id: 'step_follow',
+          type: 'test.follow',
+          config: {},
+        },
+      ],
+    };
+
+    const engine = new WorkflowEngine();
+    const context = await engine.execute(workflow, {
+      traceId: 'test-guard-skip',
+      record: {
+        fields: { 负责人: [{ id: 'ou_after' }] },
+        beforeFields: { 负责人: [] },
+      },
+    });
+
+    expect(marker.called).toBe(false);
+    expect(context.steps.step_guarded.success).toBe(true);
+    expect(context.steps.step_guarded.skipped).toBe(true);
+    expect((context.steps.step_guarded.output as any)?.data?.skip_reason).toBe('when_condition_not_met');
+    expect((context.steps.step_guarded.output as any)?.data?.evaluated_source).toBe('before');
+    expect(context.steps.step_follow.success).toBe(true);
+  });
+
+  await runTest('templatePolicy=skip：未解析模板变量时跳过 action 并继续', async () => {
+    const marker = { called: false };
+    const registry = PluginRegistry.getInstance();
+
+    const workflow: WorkflowConfig = {
+      id: 'wf_template_skip',
+      name: 'template-skip',
+      trigger: {
+        type: 'lark.bitable.record.changed',
+        config: {
+          app_token: 'appA',
+          table_id: 'tbl1',
+        },
+      },
+      steps: [
+        {
+          id: 'step_template',
+          type: 'action.test.template',
+          templatePolicy: 'skip',
+          config: {
+            payload: '${trigger.record.beforeFields.负责人.0.id}',
+          },
+          next: 'step_end',
+        },
+        {
+          id: 'step_end',
+          type: 'test.end',
+          config: {},
+        },
+      ],
+    };
+
+    // 注册一个 action.* 测试插件，便于触发 template policy 流程
+    registry.register('action.test.template', new MarkerPlugin(marker));
+
+    const engine = new WorkflowEngine();
+    const context = await engine.execute(workflow, {
+      traceId: 'test-template-skip',
+      record: {
+        fields: { 负责人: [] },
+        beforeFields: {},
+      },
+    });
+
+    expect(marker.called).toBe(false);
+    expect(context.steps.step_template.success).toBe(true);
+    expect(context.steps.step_template.skipped).toBe(true);
+    expect((context.steps.step_template.output as any)?.data?.skip_reason).toBe('unresolved_template');
+    expect((context.steps.step_template.output as any)?.data?.template_policy).toBe('skip');
+    expect(context.steps.step_end.success).toBe(true);
+  });
+
+  await runTest('templatePolicy=fail：未解析模板变量时直接失败并终止', async () => {
+    const marker = { called: false };
+    const registry = PluginRegistry.getInstance();
+    registry.register('action.test.template.fail', new MarkerPlugin(marker));
+
+    const workflow: WorkflowConfig = {
+      id: 'wf_template_fail',
+      name: 'template-fail',
+      trigger: {
+        type: 'lark.bitable.record.changed',
+        config: {
+          app_token: 'appA',
+          table_id: 'tbl1',
+        },
+      },
+      steps: [
+        {
+          id: 'step_template_fail',
+          type: 'action.test.template.fail',
+          templatePolicy: 'fail',
+          config: {
+            payload: '${trigger.record.beforeFields.负责人.0.id}',
+          },
+          next: 'step_end',
+        },
+        {
+          id: 'step_end',
+          type: 'test.end',
+          config: {},
+        },
+      ],
+    };
+
+    const engine = new WorkflowEngine();
+    const context = await engine.execute(workflow, {
+      traceId: 'test-template-fail',
+      record: {
+        fields: { 负责人: [] },
+        beforeFields: {},
+      },
+    });
+
+    expect(marker.called).toBe(false);
+    expect(context.steps.step_template_fail.success).toBe(false);
+    expect((context.steps.step_template_fail.output as any)?.code).toBe('UNRESOLVED_TEMPLATE');
+    expect((context.steps.step_template_fail.output as any)?.data?.template_policy).toBe('fail');
+    expect(context.steps.step_end).toBeUndefined();
   });
 
   console.log('\nAll workflow branching tests passed!');

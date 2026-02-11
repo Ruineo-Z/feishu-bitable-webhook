@@ -385,6 +385,6 @@ app.openapi(
 startEventListener()
 
 export default {
-  port: 3000,
+  port: 3333,
   fetch: app.fetch,
 }

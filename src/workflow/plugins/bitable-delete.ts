@@ -1,6 +1,9 @@
 import { IWorkflowPlugin, WorkflowContext, StepResult } from '../types'
 import { client } from '../../client'
-import { loadFieldResolverMaps, resolveFieldName } from './field-mapping-resolver'
+import { createLoggerWithTrace } from '../../logger'
+import { CodecWarning, encodeFieldValueForFilter, FieldCodecError, formatCodecWarnings } from '../codec'
+import { loadFieldResolverMaps, resolveFieldMeta } from './field-mapping-resolver'
+import { extractFeishuErrorPayload } from './feishu-error'
 import { okStep, errStep } from './step-result'
 
 type FilterOperator = 'is' | 'isNot' | 'contains' | 'doesNotContain' | 'isEmpty' | 'isNotEmpty' | 'isGreater' | 'isGreaterEqual' | 'isLess' | 'isLessEqual' | 'like' | 'in'
@@ -10,55 +13,17 @@ interface SearchFilter {
   conditions?: Array<{
     field_name: string
     operator: FilterOperator
-    value?: string[]
+    value?: unknown
   }>
 }
 
-
-function normalizeFilterPrimitive(value: unknown): string {
-  if (value === null || value === undefined) return ''
-
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return String(value)
-  }
-
-  if (typeof value === 'object') {
-    const candidate = value as Record<string, unknown>
-    if (typeof candidate.id === 'string' || typeof candidate.id === 'number') {
-      return String(candidate.id)
-    }
-    if (typeof candidate.user_id === 'string' || typeof candidate.user_id === 'number') {
-      return String(candidate.user_id)
-    }
-    if (typeof candidate.open_id === 'string' || typeof candidate.open_id === 'number') {
-      return String(candidate.open_id)
-    }
-    if (typeof candidate.text === 'string' || typeof candidate.text === 'number') {
-      return String(candidate.text)
-    }
-    if (typeof candidate.name === 'string' || typeof candidate.name === 'number') {
-      return String(candidate.name)
-    }
-    if (typeof candidate.value === 'string' || typeof candidate.value === 'number' || typeof candidate.value === 'boolean') {
-      return String(candidate.value)
-    }
-  }
-
-  return String(value)
-}
-
-function normalizeFilterValue(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.map((item) => normalizeFilterPrimitive(item)).filter((item) => item !== '')
-  }
-
-  return [normalizeFilterPrimitive(value)].filter((item) => item !== '')
-}
+const EMPTY_VALUE_OPERATORS = new Set<FilterOperator>(['isEmpty', 'isNotEmpty'])
 
 export class BitableDeletePlugin implements IWorkflowPlugin {
   async execute(context: WorkflowContext, config: Record<string, unknown>): Promise<StepResult> {
     const startTime = Date.now()
     const { app_token, table_id, record_id, filter } = config
+    let resolvedFilterForDebug: SearchFilter | null = null
 
     if (!app_token || !table_id) {
       return errStep(
@@ -71,6 +36,7 @@ export class BitableDeletePlugin implements IWorkflowPlugin {
     try {
       const resolverMaps = await loadFieldResolverMaps(String(app_token), String(table_id))
       let targetRecordId = record_id ? String(record_id) : ''
+      const codecWarnings: CodecWarning[] = []
 
       if (!targetRecordId) {
         if (!filter || typeof filter !== 'object') {
@@ -82,22 +48,59 @@ export class BitableDeletePlugin implements IWorkflowPlugin {
         }
 
         const rawFilter = filter as SearchFilter
+        const invalidConditions: Array<{ field_name: string; operator: FilterOperator }> = []
         const resolvedConditions = (rawFilter.conditions || []).map((condition) => {
-          const resolved = resolveFieldName(condition.field_name, resolverMaps)
+          const resolved = resolveFieldMeta(condition.field_name, resolverMaps)
           if (resolved.missing) {
             throw new Error(`Missing field mapping for field ID: ${condition.field_name}`)
           }
 
-          const normalizedValue = condition.value !== undefined
-            ? normalizeFilterValue(condition.value)
-            : undefined
+          const encodedValue = encodeFieldValueForFilter(condition.value, {
+            appToken: String(app_token),
+            tableId: String(table_id),
+            fieldName: resolved.fieldName,
+            fieldId: resolved.fieldId,
+            rawFieldType: resolved.fieldType,
+            operator: condition.operator,
+          })
+          codecWarnings.push(...encodedValue.warnings)
+          const requiresNonEmptyValue = !EMPTY_VALUE_OPERATORS.has(condition.operator)
+          const hasValue = Array.isArray(encodedValue.value) && encodedValue.value.length > 0
+          if (requiresNonEmptyValue && !hasValue) {
+            invalidConditions.push({
+              field_name: resolved.fieldName,
+              operator: condition.operator,
+            })
+          }
 
           return {
             ...condition,
             field_name: resolved.fieldName,
-            value: normalizedValue,
+            value: encodedValue.value,
           }
         })
+
+        if (invalidConditions.length > 0) {
+          const logger = createLoggerWithTrace(context.trigger?.traceId || 'WF-CODEC', 'bitable-delete.ts')
+          logger.warn('delete filter 条件值为空，跳过删除', {
+            invalidConditions,
+          })
+
+          return okStep(
+            {
+              deleted: false,
+              reason: 'filter_value_missing',
+              invalidConditions,
+              warnings: formatCodecWarnings(codecWarnings),
+            },
+            Date.now() - startTime,
+          )
+        }
+
+        resolvedFilterForDebug = {
+          conjunction: rawFilter.conjunction || 'and',
+          conditions: resolvedConditions,
+        }
 
         const searchRes = await (client as any).bitable.v1.appTableRecord.search({
           path: {
@@ -108,11 +111,8 @@ export class BitableDeletePlugin implements IWorkflowPlugin {
             page_size: 1,
             user_id_type: 'open_id',
           },
-          data: {
-            filter: {
-              conjunction: rawFilter.conjunction || 'and',
-              conditions: resolvedConditions,
-            },
+        data: {
+            filter: resolvedFilterForDebug,
           },
         })
 
@@ -127,10 +127,16 @@ export class BitableDeletePlugin implements IWorkflowPlugin {
 
         const items = searchRes?.data?.items || []
         if (items.length === 0) {
+          if (codecWarnings.length > 0) {
+            const logger = createLoggerWithTrace(context.trigger?.traceId || 'WF-CODEC', 'bitable-delete.ts')
+            logger.warn('delete filter 字段 codec 降级透传', formatCodecWarnings(codecWarnings))
+          }
+
           return okStep(
             {
               deleted: false,
               reason: 'no_matching_record',
+              warnings: formatCodecWarnings(codecWarnings),
             },
             Date.now() - startTime,
           )
@@ -156,14 +162,52 @@ export class BitableDeletePlugin implements IWorkflowPlugin {
         )
       }
 
+      if (codecWarnings.length > 0) {
+        const logger = createLoggerWithTrace(context.trigger?.traceId || 'WF-CODEC', 'bitable-delete.ts')
+        logger.warn('delete filter 字段 codec 降级透传', formatCodecWarnings(codecWarnings))
+      }
+
       return okStep(
         {
           deleted: true,
           recordId: targetRecordId,
+          warnings: formatCodecWarnings(codecWarnings),
         },
         Date.now() - startTime,
       )
     } catch (error: any) {
+      if (error instanceof FieldCodecError) {
+        return errStep(
+          error.code,
+          error.message,
+          Date.now() - startTime,
+          error.details,
+        )
+      }
+
+      const feishuError = extractFeishuErrorPayload(error)
+      if (feishuError) {
+        const logger = createLoggerWithTrace(context.trigger?.traceId || 'WF-CODEC', 'bitable-delete.ts')
+        logger.error('delete 调用飞书接口失败', {
+          feishuError,
+          filter: resolvedFilterForDebug,
+        })
+
+        const feishuMessage = feishuError.msg || feishuError.message || 'Failed to delete record'
+        const message = (feishuMessage === 'InvalidFilter' && resolvedFilterForDebug)
+          ? `InvalidFilter: ${JSON.stringify(resolvedFilterForDebug)}`
+          : feishuMessage
+        return errStep(
+          'FEISHU_API_ERROR',
+          message,
+          Date.now() - startTime,
+          {
+            ...feishuError,
+            filter: resolvedFilterForDebug,
+          },
+        )
+      }
+
       return errStep(
         'PLUGIN_ERROR',
         `Failed to delete record: ${error.message || error}`,

@@ -35,6 +35,9 @@ const UI_EVENT_TYPE_ALIASES = {
   delete: 'record_deleted',
 }
 
+const CONDITION_SOURCES = new Set(['before', 'after'])
+const TEMPLATE_POLICIES = new Set(['fail', 'skip'])
+
 const state = createInitialState()
 const defaultConfigText = createDefaultConfigTemplate()
 
@@ -121,6 +124,77 @@ function parseEventTypesInput(rawInput) {
   return Array.from(new Set(normalized))
 }
 
+function ensureConditionObject(condition, path) {
+  if (!condition || typeof condition !== 'object' || Array.isArray(condition)) {
+    throw new Error(`${path} 必须是条件对象（包含 logic 与 expressions）。`)
+  }
+
+  const logic = condition.logic
+  if (logic !== 'AND' && logic !== 'OR') {
+    throw new Error(`${path}.logic 仅支持 AND 或 OR。`)
+  }
+
+  if (!Array.isArray(condition.expressions) || condition.expressions.length === 0) {
+    throw new Error(`${path}.expressions 至少包含一个表达式。`)
+  }
+
+  condition.expressions.forEach((expression, index) => {
+    const expressionPath = `${path}.expressions[${index}]`
+    if (!expression || typeof expression !== 'object' || Array.isArray(expression)) {
+      throw new Error(`${expressionPath} 必须是对象。`)
+    }
+
+    if (!expression.field || typeof expression.field !== 'string') {
+      throw new Error(`${expressionPath}.field 必填且必须为字符串。`)
+    }
+
+    if (!expression.operator || typeof expression.operator !== 'string') {
+      throw new Error(`${expressionPath}.operator 必填且必须为字符串。`)
+    }
+
+    if (expression.source !== undefined && !CONDITION_SOURCES.has(expression.source)) {
+      throw new Error(`${expressionPath}.source 仅支持 before 或 after。`)
+    }
+  })
+}
+
+function validateWorkflowDsl(config) {
+  if (!Array.isArray(config.steps) || config.steps.length === 0) {
+    throw new Error('Workflow DSL.steps 至少包含一个步骤。')
+  }
+
+  config.steps.forEach((step, index) => {
+    const stepPath = `steps[${index}]`
+    if (!step || typeof step !== 'object' || Array.isArray(step)) {
+      throw new Error(`${stepPath} 必须是对象。`)
+    }
+
+    if (!step.id || typeof step.id !== 'string') {
+      throw new Error(`${stepPath}.id 必填且必须为字符串。`)
+    }
+
+    if (!step.type || typeof step.type !== 'string') {
+      throw new Error(`${stepPath}.type 必填且必须为字符串。`)
+    }
+
+    if (!step.config || typeof step.config !== 'object' || Array.isArray(step.config)) {
+      throw new Error(`${stepPath}.config 必须是对象。`)
+    }
+
+    if (step.type === 'condition') {
+      ensureConditionObject(step.config, `${stepPath}.config`)
+    }
+
+    if (step.when !== undefined) {
+      ensureConditionObject(step.when, `${stepPath}.when`)
+    }
+
+    if (step.templatePolicy !== undefined && !TEMPLATE_POLICIES.has(step.templatePolicy)) {
+      throw new Error(`${stepPath}.templatePolicy 仅支持 fail 或 skip。`)
+    }
+  })
+}
+
 function validateAndBuildPayload() {
   const name = elements.workflowName.value.trim()
   if (!name) {
@@ -142,6 +216,7 @@ function validateAndBuildPayload() {
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     throw new Error('Workflow DSL 必须是 JSON 对象。')
   }
+  validateWorkflowDsl(config)
 
   const scopeType = elements.scopeType.value
   if (scopeType !== 'table') {

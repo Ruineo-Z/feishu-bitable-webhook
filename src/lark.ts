@@ -7,6 +7,7 @@ import { parseFeishuEvent, ParsedEvent } from './parser'
 import { getSupabase } from './db/client'
 import { WorkflowEngine } from './workflow/core/engine'
 import { WorkflowConfig } from './workflow/types'
+import { decodeFieldValue, formatCodecWarnings } from './workflow/codec'
 import {
   WorkflowEventType,
   normalizeWorkflowEventType,
@@ -19,8 +20,10 @@ registerStandardPlugins()
 const workflowEngine = new WorkflowEngine()
 
 const processedEvents = new Set<string>()
+const processingEvents = new Set<string>()
 const PROCESSED_EVENTS_TTL = 60 * 60 * 1000
 const eventTimestamps = new Map<string, number>()
+const processingEventTimestamps = new Map<string, number>()
 
 const logQueue: ExecutionLog[] = []
 const LOG_QUEUE_MAX_SIZE = 1000
@@ -58,12 +61,19 @@ function logExecution(executionLog: Omit<ExecutionLog, 'id' | 'created_at'>): vo
   queueExecutionLog(executionLog)
 }
 
-function clearExpiredProcessedEvents(): void {
+function clearExpiredEventStates(): void {
   const now = Date.now()
   for (const [id, ts] of eventTimestamps.entries()) {
     if (now - ts > PROCESSED_EVENTS_TTL) {
       processedEvents.delete(id)
       eventTimestamps.delete(id)
+    }
+  }
+
+  for (const [id, ts] of processingEventTimestamps.entries()) {
+    if (now - ts > PROCESSED_EVENTS_TTL) {
+      processingEvents.delete(id)
+      processingEventTimestamps.delete(id)
     }
   }
 }
@@ -90,15 +100,27 @@ async function mapFieldsByName(
   appToken: string,
   tableId: string,
   fieldsById: Record<string, unknown>,
-): Promise<{ mappedFields: Record<string, unknown>; missingFieldIds: string[] }> {
-  const idToNameMap = await fieldMappingsDb.getIdToNameMap(appToken, tableId)
+): Promise<{ mappedFields: Record<string, unknown>; missingFieldIds: string[]; warnings: ReturnType<typeof formatCodecWarnings> }> {
+  const [idToNameMap, fieldTypeMaps] = await Promise.all([
+    fieldMappingsDb.getIdToNameMap(appToken, tableId),
+    fieldMappingsDb.getFieldTypeMaps(appToken, tableId),
+  ])
   const mappedFields: Record<string, unknown> = {}
   const missingFieldIds: string[] = []
+  const codecWarnings = []
 
   for (const [fieldId, value] of Object.entries(fieldsById || {})) {
     const fieldName = idToNameMap[fieldId]
     if (fieldName) {
-      mappedFields[fieldName] = value
+      const decoded = decodeFieldValue(value, {
+        appToken,
+        tableId,
+        fieldName,
+        fieldId,
+        rawFieldType: fieldTypeMaps.fieldTypeById[fieldId] || fieldTypeMaps.fieldTypeByName[fieldName] || 'unknown',
+      })
+      mappedFields[fieldName] = decoded.value
+      codecWarnings.push(...decoded.warnings)
       continue
     }
 
@@ -106,7 +128,7 @@ async function mapFieldsByName(
     missingFieldIds.push(fieldId)
   }
 
-  return { mappedFields, missingFieldIds }
+  return { mappedFields, missingFieldIds, warnings: formatCodecWarnings(codecWarnings) }
 }
 
 function summarizeWorkflowResult(steps: Record<string, { success: boolean; error?: string; output?: unknown }>) {
@@ -124,6 +146,104 @@ function summarizeWorkflowResult(steps: Record<string, { success: boolean; error
     status: 'success' as const,
     errorMessage: null,
   }
+}
+
+function previewRawValue(value: unknown, maxLen = 120): string | null {
+  if (value === undefined || value === null) return null
+  const str = String(value)
+  return str.length > maxLen ? `${str.slice(0, maxLen)}...` : str
+}
+
+type RawFieldChangeSummary = {
+  fieldId: string
+  beforeHasValue: boolean
+  afterHasValue: boolean
+  beforeUserCount: number
+  afterUserCount: number
+  beforeValuePreview: string | null
+  afterValuePreview: string | null
+}
+
+function summarizeRawFieldChanges(
+  beforeValue: Array<Record<string, unknown>> | undefined,
+  afterValue: Array<Record<string, unknown>> | undefined,
+): RawFieldChangeSummary[] {
+  const byFieldId = new Map<string, RawFieldChangeSummary>()
+
+  const fill = (
+    list: Array<Record<string, unknown>> | undefined,
+    type: 'before' | 'after',
+  ) => {
+    for (const item of list || []) {
+      const fieldId = typeof item.field_id === 'string' ? item.field_id : 'unknown_field'
+      if (!byFieldId.has(fieldId)) {
+        byFieldId.set(fieldId, {
+          fieldId,
+          beforeHasValue: false,
+          afterHasValue: false,
+          beforeUserCount: 0,
+          afterUserCount: 0,
+          beforeValuePreview: null,
+          afterValuePreview: null,
+        })
+      }
+
+      const snapshot = byFieldId.get(fieldId)!
+      const identity = item.field_identity_value as Record<string, unknown> | undefined
+      const users = Array.isArray(identity?.users) ? identity?.users : []
+      const hasValue = item.field_value !== undefined && item.field_value !== null && item.field_value !== ''
+      const valuePreview = previewRawValue(item.field_value)
+
+      if (type === 'before') {
+        snapshot.beforeHasValue = hasValue || users.length > 0
+        snapshot.beforeUserCount = users.length
+        snapshot.beforeValuePreview = valuePreview
+      } else {
+        snapshot.afterHasValue = hasValue || users.length > 0
+        snapshot.afterUserCount = users.length
+        snapshot.afterValuePreview = valuePreview
+      }
+    }
+  }
+
+  fill(beforeValue, 'before')
+  fill(afterValue, 'after')
+
+  return Array.from(byFieldId.values())
+}
+
+function summarizeRawEvent(rawEvent: unknown) {
+  const event = (rawEvent || {}) as Record<string, unknown>
+  const actionList = Array.isArray(event.action_list) ? event.action_list : []
+
+  return {
+    eventId: event.event_id,
+    eventType: event.event_type,
+    createTime: event.create_time,
+    tableId: event.table_id,
+    appToken: event.file_token,
+    actionCount: actionList.length,
+    actions: actionList.map((action) => {
+      const actionObj = action as Record<string, unknown>
+      const beforeValue = Array.isArray(actionObj.before_value) ? actionObj.before_value as Array<Record<string, unknown>> : []
+      const afterValue = Array.isArray(actionObj.after_value) ? actionObj.after_value as Array<Record<string, unknown>> : []
+
+      return {
+        action: actionObj.action,
+        recordId: actionObj.record_id,
+        beforeFieldCount: beforeValue.length,
+        afterFieldCount: afterValue.length,
+        fieldChanges: summarizeRawFieldChanges(beforeValue, afterValue),
+      }
+    }),
+  }
+}
+
+function pickDiagnosticsField(snapshot: Record<string, unknown>, fieldName: string) {
+  if (!(fieldName in snapshot)) {
+    return null
+  }
+  return snapshot[fieldName]
 }
 
 async function processEvent(rawEvent: unknown, version: string) {
@@ -149,28 +269,57 @@ async function processEvent(rawEvent: unknown, version: string) {
     beforeFields,
   } = parsedEvent
 
-  clearExpiredProcessedEvents()
+  log.debug('原始事件摘要', summarizeRawEvent(rawEvent))
+
+  clearExpiredEventStates()
 
   if (eventId && processedEvents.has(eventId)) {
     log.warn(`事件已处理: ${eventId}`)
     return
   }
 
-  const mappedAfter = await mapFieldsByName(appToken, tableId, fields)
-  const mappedBefore = await mapFieldsByName(appToken, tableId, beforeFields)
-
-  const missingFieldIds = new Set<string>([
-    ...mappedAfter.missingFieldIds,
-    ...mappedBefore.missingFieldIds,
-  ])
-  if (missingFieldIds.size > 0) {
-    log.warn('存在未映射字段 ID，已使用原始字段 ID 作为键:', Array.from(missingFieldIds))
+  if (eventId && processingEvents.has(eventId)) {
+    log.warn(`事件正在处理中，跳过重复投递: ${eventId}`)
+    return
   }
 
-  const triggerAction = normalizeTriggerAction(eventType)
-  const normalizedEventType: WorkflowEventType = normalizeWorkflowEventType(eventType) || eventType
+  if (eventId) {
+    processingEvents.add(eventId)
+    processingEventTimestamps.set(eventId, Date.now())
+  }
 
+  let shouldMarkProcessed = false
   try {
+    const mappedAfter = await mapFieldsByName(appToken, tableId, fields)
+    const mappedBefore = await mapFieldsByName(appToken, tableId, beforeFields)
+
+    log.debug('关键字段快照', {
+      eventId,
+      eventType,
+      recordId,
+      ownerBefore: pickDiagnosticsField(mappedBefore.mappedFields, '账号第一负责人'),
+      ownerAfter: pickDiagnosticsField(mappedAfter.mappedFields, '账号第一负责人'),
+      nicknameBefore: pickDiagnosticsField(mappedBefore.mappedFields, '账号当前昵称'),
+      nicknameAfter: pickDiagnosticsField(mappedAfter.mappedFields, '账号当前昵称'),
+    })
+
+    const missingFieldIds = new Set<string>([
+      ...mappedAfter.missingFieldIds,
+      ...mappedBefore.missingFieldIds,
+    ])
+    if (missingFieldIds.size > 0) {
+      log.warn('存在未映射字段 ID，已使用原始字段 ID 作为键:', Array.from(missingFieldIds))
+    }
+    const codecWarnings = [...mappedAfter.warnings, ...mappedBefore.warnings]
+    if (codecWarnings.length > 0) {
+      log.warn('事件字段 decode 命中 codec 降级透传', codecWarnings)
+    }
+
+    const triggerAction = normalizeTriggerAction(eventType)
+    const normalizedEventType: WorkflowEventType = normalizeWorkflowEventType(eventType) || eventType
+
+    shouldMarkProcessed = true
+
     const workflowCandidates = await workflowsDb.findCandidatesByScope(appToken, tableId, normalizedEventType)
     const sourceStats = summarizeWorkflowCandidateSources(workflowCandidates)
 
@@ -257,15 +406,26 @@ async function processEvent(rawEvent: unknown, version: string) {
         }
       }
     } else {
-      log.info('未命中任何工作流候选')
+      log.debug('未命中任何工作流候选', {
+        eventId,
+        eventType,
+        version,
+        appToken,
+        tableId,
+        recordId,
+      })
     }
   } catch (error) {
     log.error('工作流引擎处理异常:', error)
-  }
-
-  if (eventId) {
-    processedEvents.add(eventId)
-    eventTimestamps.set(eventId, Date.now())
+  } finally {
+    if (eventId) {
+      processingEvents.delete(eventId)
+      processingEventTimestamps.delete(eventId)
+      if (shouldMarkProcessed) {
+        processedEvents.add(eventId)
+        eventTimestamps.set(eventId, Date.now())
+      }
+    }
   }
 }
 
@@ -333,18 +493,18 @@ export const startEventListener = async () => {
 
     wsClient.start({
       eventDispatcher: new Lark.EventDispatcher({}).register({
-        'drive.file.bitable_record_changed_v1': async (data: any) => {
-          processEvent(data, 'v1').catch((err) => {
+        'drive.file.bitable_record_changed_v1': (data: any) => {
+          void processEvent(data, 'v1').catch((err) => {
             log.error('v1 事件异步处理失败:', err)
           })
         },
-        'drive.file.bitable_record_changed_v2': async (data: any) => {
-          processEvent(data, 'v2').catch((err) => {
+        'drive.file.bitable_record_changed_v2': (data: any) => {
+          void processEvent(data, 'v2').catch((err) => {
             log.error('v2 事件异步处理失败:', err)
           })
         },
-        'drive.file.bitable_field_changed_v1': async (data: any) => {
-          processFieldChangedEvent(data).catch((err) => {
+        'drive.file.bitable_field_changed_v1': (data: any) => {
+          void processFieldChangedEvent(data).catch((err) => {
             log.error('字段变更事件处理失败:', err)
           })
         },

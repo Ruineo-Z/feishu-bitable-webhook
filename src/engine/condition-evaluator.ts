@@ -1,13 +1,16 @@
 export interface ConditionExpression {
   field: string
   operator: string
-  value: string | number | boolean | null | string[]
+  value?: unknown
+  source?: 'before' | 'after'
 }
 
 export interface Condition {
   logic: 'AND' | 'OR'
   expressions: ConditionExpression[]
 }
+
+export type ConditionEvaluatedSource = 'before' | 'after' | 'mixed' | 'none'
 
 /**
  * 字段类型处理器接口
@@ -299,10 +302,14 @@ export class ConditionEvaluator {
   private static evaluateExpression(expr: ConditionExpression, context: EvaluationContext): boolean {
     const fieldType = getFieldType(expr.field, context)
     const handler = FIELD_TYPE_HANDLERS[fieldType] || FIELD_TYPE_HANDLERS.text
+    const source = expr.source === 'before' ? 'before' : 'after'
+    const sourceFields = source === 'before'
+      ? (context.beforeFields || {})
+      : context.fields
 
     // 如果操作符是该类型处理器支持的，使用处理器
     if (handler.operators.includes(expr.operator)) {
-      const fieldValue = this.getNestedValue(context.fields, expr.field)
+      const fieldValue = this.getNestedValue(sourceFields, expr.field)
       const results = handler.evaluate(fieldValue, expr.value, context)
       return results[expr.operator] ?? false
     }
@@ -313,7 +320,7 @@ export class ConditionEvaluator {
       throw new Error(`Unknown operator: ${expr.operator}`)
     }
 
-    const fieldValue = this.getNestedValue(context.fields, expr.field)
+    const fieldValue = this.getNestedValue(sourceFields, expr.field)
 
     // exists / not_exists 不需要比较值
     if (expr.operator === 'exists' || expr.operator === 'not_exists') {
@@ -356,5 +363,26 @@ export class ConditionEvaluator {
     } catch {
       throw new Error('Invalid condition JSON')
     }
+  }
+
+  static resolveEvaluatedSource(condition: Condition | undefined): ConditionEvaluatedSource {
+    if (!condition || !Array.isArray(condition.expressions) || condition.expressions.length === 0) {
+      return 'none'
+    }
+
+    let hasBefore = false
+    let hasAfter = false
+
+    for (const expr of condition.expressions) {
+      if (expr.source === 'before') {
+        hasBefore = true
+      } else {
+        hasAfter = true
+      }
+    }
+
+    if (hasBefore && hasAfter) return 'mixed'
+    if (hasBefore) return 'before'
+    return 'after'
   }
 }

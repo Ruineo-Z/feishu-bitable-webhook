@@ -23,6 +23,7 @@ export function createDefaultConfigTemplate() {
                 field: '状态',
                 operator: 'equals',
                 value: '已完成',
+                source: 'after',
               },
             ],
           },
@@ -33,6 +34,17 @@ export function createDefaultConfigTemplate() {
           id: 'step_notify_done',
           type: 'action.feishu.message',
           name: '通知完成',
+          templatePolicy: 'fail',
+          when: {
+            logic: 'AND',
+            expressions: [
+              {
+                field: '状态',
+                operator: 'exists',
+                source: 'after',
+              },
+            ],
+          },
           config: {
             receive_id: 'ou_xxx',
             receive_id_type: 'open_id',

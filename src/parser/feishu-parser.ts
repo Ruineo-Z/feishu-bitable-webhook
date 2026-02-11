@@ -85,6 +85,28 @@ export class FeishuEventParser implements EventParser {
    * 提取字段值
    * 从 action_list 中提取 before_value 或 after_value
    */
+  private normalizeUserId(user: any): string | null {
+    if (!user) return null
+
+    const nested = user.user_id
+    if (nested && typeof nested === 'object') {
+      const nestedId =
+        (typeof nested.open_id === 'string' && nested.open_id) ||
+        (typeof nested.user_id === 'string' && nested.user_id) ||
+        (typeof nested.union_id === 'string' && nested.union_id)
+      if (nestedId) return nestedId
+    }
+
+    const directId =
+      (typeof user.id === 'string' && user.id) ||
+      (typeof user.open_id === 'string' && user.open_id) ||
+      (typeof user.user_id === 'string' && user.user_id) ||
+      (typeof user.union_id === 'string' && user.union_id) ||
+      (typeof user.userId === 'string' && user.userId)
+
+    return directId || null
+  }
+
   private extractFields(
     actionList: Array<{ before_value?: any[]; after_value?: any[] }> | undefined,
     valueType: 'before_value' | 'after_value'
@@ -105,10 +127,12 @@ export class FeishuEventParser implements EventParser {
         // 如果有 field_identity_value（人员字段），优先使用其中的 user_id.open_id
         // 飞书 API 要求人员字段格式为: [{ id: "ou_xxx" }]
         if (fieldIdentityValue?.users && Array.isArray(fieldIdentityValue.users)) {
-          const users = fieldIdentityValue.users.map((u: any) => ({
-            id: u.user_id?.open_id || u.user_id?.user_id || u.user_id?.union_id
-          }))
-          fields[fieldId] = users.length === 1 ? users : users
+          const users = fieldIdentityValue.users
+            .map((u: any) => this.normalizeUserId(u))
+            .filter((id: string | null): id is string => Boolean(id))
+            .map((id: string) => ({ id }))
+
+          fields[fieldId] = users
         } else if (fieldValue !== undefined && fieldValue !== '') {
           // 普通字段值
           try {

@@ -26,6 +26,7 @@ export async function refreshFieldMappingsByTable(
   }
 
   await fieldMappingsDb.replaceTableMappings(appToken, tableId, mappings)
+  fieldMappingsDb.hydrateTableFieldTypes(appToken, tableId, fields, 'runtime-cache')
 
   return {
     appToken,

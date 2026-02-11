@@ -1,6 +1,9 @@
 import { IWorkflowPlugin, WorkflowContext, StepResult } from '../types'
 import { client } from '../../client'
-import { loadFieldResolverMaps, resolveFieldObjectKeys } from './field-mapping-resolver'
+import { createLoggerWithTrace } from '../../logger'
+import { CodecWarning, encodeFieldValueForWrite, FieldCodecError, formatCodecWarnings } from '../codec'
+import { loadFieldResolverMaps, resolveFieldMeta } from './field-mapping-resolver'
+import { extractFeishuErrorPayload } from './feishu-error'
 import { okStep, errStep } from './step-result'
 
 export class BitableCreatePlugin implements IWorkflowPlugin {
@@ -18,10 +21,28 @@ export class BitableCreatePlugin implements IWorkflowPlugin {
 
     try {
       const resolverMaps = await loadFieldResolverMaps(String(app_token), String(table_id))
-      const { resolvedFields, missingFieldIds } = resolveFieldObjectKeys(
-        fields as Record<string, unknown>,
-        resolverMaps,
-      )
+      const sourceFields = fields as Record<string, unknown>
+      const resolvedFields: Record<string, unknown> = {}
+      const missingFieldIds: string[] = []
+      const codecWarnings: CodecWarning[] = []
+
+      for (const [fieldInput, fieldValue] of Object.entries(sourceFields)) {
+        const resolved = resolveFieldMeta(fieldInput, resolverMaps)
+        if (resolved.missing) {
+          missingFieldIds.push(fieldInput)
+          continue
+        }
+
+        const encoded = encodeFieldValueForWrite(fieldValue, {
+          appToken: String(app_token),
+          tableId: String(table_id),
+          fieldName: resolved.fieldName,
+          fieldId: resolved.fieldId,
+          rawFieldType: resolved.fieldType,
+        })
+        resolvedFields[resolved.fieldName] = encoded.value
+        codecWarnings.push(...encoded.warnings)
+      }
 
       if (missingFieldIds.length > 0) {
         return errStep(
@@ -56,13 +77,38 @@ export class BitableCreatePlugin implements IWorkflowPlugin {
 
       const recordId = res?.data?.record?.record_id
 
+      if (codecWarnings.length > 0) {
+        const logger = createLoggerWithTrace(context.trigger?.traceId || 'WF-CODEC', 'bitable-create.ts')
+        logger.warn('create 字段 codec 降级透传', formatCodecWarnings(codecWarnings))
+      }
+
       return okStep(
         {
           recordId,
+          warnings: formatCodecWarnings(codecWarnings),
         },
         Date.now() - startTime,
       )
     } catch (error: any) {
+      if (error instanceof FieldCodecError) {
+        return errStep(
+          error.code,
+          error.message,
+          Date.now() - startTime,
+          error.details,
+        )
+      }
+
+      const feishuError = extractFeishuErrorPayload(error)
+      if (feishuError) {
+        return errStep(
+          'FEISHU_API_ERROR',
+          feishuError.msg || feishuError.message || 'Failed to create record',
+          Date.now() - startTime,
+          feishuError,
+        )
+      }
+
       return errStep(
         'PLUGIN_ERROR',
         `Failed to create record: ${error.message || error}`,

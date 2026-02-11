@@ -23,6 +23,7 @@ export interface WorkflowRecord {
 export interface WorkflowSummaryRecord {
   id: string;
   name: string;
+  config?: WorkflowConfig | null;
   is_active: boolean;
   scope_type: WorkflowScopeType | null;
   app_token: string | null;
@@ -99,7 +100,7 @@ export const workflowsDb = {
   async findAll(filter: WorkflowFilter = {}): Promise<{ data: WorkflowSummaryRecord[]; total: number }> {
     let query = getSupabase()
       .from('workflows')
-      .select('id,name,is_active,scope_type,app_token,table_id,trigger_actions,created_at,updated_at', { count: 'exact' });
+      .select('id,name,config,is_active,scope_type,app_token,table_id,trigger_actions,created_at,updated_at', { count: 'exact' });
 
     query = query
       .eq('scope_type', 'table')

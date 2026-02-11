@@ -1,6 +1,22 @@
 import { z } from 'zod';
 
 const WORKFLOW_EVENT_TYPE_ENUM = z.enum(['record_created', 'record_updated', 'record_deleted']);
+const WORKFLOW_CONDITION_LOGIC_ENUM = z.enum(['AND', 'OR']);
+
+export const WorkflowConditionSourceSchema = z.enum(['before', 'after']);
+export const WorkflowTemplatePolicySchema = z.enum(['fail', 'skip']);
+
+export const WorkflowConditionExpressionSchema = z.object({
+  field: z.string().min(1),
+  operator: z.string().min(1),
+  value: z.unknown().optional(),
+  source: WorkflowConditionSourceSchema.optional(),
+});
+
+export const WorkflowConditionSchema = z.object({
+  logic: WORKFLOW_CONDITION_LOGIC_ENUM,
+  expressions: z.array(WorkflowConditionExpressionSchema).min(1),
+});
 
 type WorkflowStepLike = {
   id: string;
@@ -156,9 +172,28 @@ export const WorkflowStepSchema = z.object({
   type: z.string().min(1),
   name: z.string().optional(),
   config: z.record(z.unknown()),
+  when: WorkflowConditionSchema.optional(),
+  templatePolicy: WorkflowTemplatePolicySchema.optional(),
   next: z.string().min(1).optional(),
   onTrue: z.string().min(1).optional(),
   onFalse: z.string().min(1).optional(),
+}).superRefine((step, ctx) => {
+  if (step.type !== 'condition') {
+    return;
+  }
+
+  const parsed = WorkflowConditionSchema.safeParse(step.config);
+  if (parsed.success) {
+    return;
+  }
+
+  for (const issue of parsed.error.issues) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['config', ...issue.path],
+      message: `condition 步骤配置不合法: ${issue.message}`,
+    });
+  }
 });
 
 export const WorkflowConfigSchema = z.object({

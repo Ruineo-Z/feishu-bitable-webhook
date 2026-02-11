@@ -52,6 +52,7 @@
                   <th>名称</th>
                   <th>状态</th>
                   <th>作用域</th>
+                  <th>DSL能力</th>
                   <th>更新时间</th>
                   <th>操作</th>
                 </tr>
@@ -125,6 +126,9 @@
                 spellcheck="false"
                 placeholder="请输入符合后端 schema 的 JSON"
               ></textarea>
+              <small class="help-text">
+                支持表达式 source（before/after）、步骤 when 守卫、templatePolicy（fail/skip）。
+              </small>
             </label>
 
             <div class="form-actions">

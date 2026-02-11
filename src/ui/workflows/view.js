@@ -34,6 +34,50 @@ function formatScope(scope) {
   return `table · ${appToken}/${tableId} · ${eventSummary}`
 }
 
+function summarizeDslCapabilities(config) {
+  const steps = Array.isArray(config?.steps) ? config.steps : []
+  let beforeCount = 0
+  let whenCount = 0
+  let policySkipCount = 0
+  let policyFailCount = 0
+
+  for (const step of steps) {
+    if (step?.when) {
+      whenCount += 1
+    }
+
+    if (step?.templatePolicy === 'skip') {
+      policySkipCount += 1
+    } else if (step?.templatePolicy === 'fail') {
+      policyFailCount += 1
+    }
+
+    const expressions = Array.isArray(step?.config?.expressions) ? step.config.expressions : []
+    expressions.forEach((expr) => {
+      if (expr?.source === 'before') {
+        beforeCount += 1
+      }
+    })
+  }
+
+  const fragments = []
+  if (beforeCount > 0) {
+    fragments.push(`before表达式 ${beforeCount}`)
+  }
+  if (whenCount > 0) {
+    fragments.push(`when守卫 ${whenCount}`)
+  }
+  if (policySkipCount > 0 || policyFailCount > 0) {
+    fragments.push(`policy(skip:${policySkipCount}/fail:${policyFailCount})`)
+  }
+
+  if (fragments.length === 0) {
+    return '默认（after + fail）'
+  }
+
+  return fragments.join(' · ')
+}
+
 export function renderFeedback(elements, feedback) {
   const node = elements.feedback
 
@@ -116,6 +160,7 @@ export function renderWorkflowList(elements, state) {
           <td>${escapeHtml(workflow.name || '-') }</td>
           <td><span class="badge ${statusClass}">${statusText}</span></td>
           <td><span class="badge scope">${escapeHtml(formatScope(workflow.scope))}</span></td>
+          <td>${escapeHtml(summarizeDslCapabilities(workflow.config))}</td>
           <td>${escapeHtml(formatDateTime(workflow.updated_at))}</td>
           <td>
             <div class="row-actions">

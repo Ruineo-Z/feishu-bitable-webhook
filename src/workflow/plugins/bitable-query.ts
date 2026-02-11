@@ -1,6 +1,9 @@
 import { IWorkflowPlugin, WorkflowContext, StepResult } from '../types'
 import { client } from '../../client'
-import { loadFieldResolverMaps, resolveFieldName, resolveFieldNameList } from './field-mapping-resolver'
+import { createLoggerWithTrace } from '../../logger'
+import { CodecWarning, encodeFieldValueForFilter, FieldCodecError, formatCodecWarnings } from '../codec'
+import { loadFieldResolverMaps, resolveFieldMeta, resolveFieldNameList } from './field-mapping-resolver'
+import { extractFeishuErrorPayload } from './feishu-error'
 import { okStep, errStep } from './step-result'
 
 type FilterOperator = 'is' | 'isNot' | 'contains' | 'doesNotContain' | 'isEmpty' | 'isNotEmpty' | 'isGreater' | 'isGreaterEqual' | 'isLess' | 'isLessEqual' | 'like' | 'in'
@@ -10,7 +13,7 @@ interface QueryFilter {
   conditions?: Array<{
     field_name: string
     operator: FilterOperator
-    value?: string[]
+    value?: unknown
   }>
 }
 
@@ -19,50 +22,12 @@ interface QuerySort {
   desc?: boolean
 }
 
-
-function normalizeFilterPrimitive(value: unknown): string {
-  if (value === null || value === undefined) return ''
-
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return String(value)
-  }
-
-  if (typeof value === 'object') {
-    const candidate = value as Record<string, unknown>
-    if (typeof candidate.id === 'string' || typeof candidate.id === 'number') {
-      return String(candidate.id)
-    }
-    if (typeof candidate.user_id === 'string' || typeof candidate.user_id === 'number') {
-      return String(candidate.user_id)
-    }
-    if (typeof candidate.open_id === 'string' || typeof candidate.open_id === 'number') {
-      return String(candidate.open_id)
-    }
-    if (typeof candidate.text === 'string' || typeof candidate.text === 'number') {
-      return String(candidate.text)
-    }
-    if (typeof candidate.name === 'string' || typeof candidate.name === 'number') {
-      return String(candidate.name)
-    }
-    if (typeof candidate.value === 'string' || typeof candidate.value === 'number' || typeof candidate.value === 'boolean') {
-      return String(candidate.value)
-    }
-  }
-
-  return String(value)
-}
-
-function normalizeFilterValue(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.map((item) => normalizeFilterPrimitive(item)).filter((item) => item !== '')
-  }
-
-  return [normalizeFilterPrimitive(value)].filter((item) => item !== '')
-}
+const EMPTY_VALUE_OPERATORS = new Set<FilterOperator>(['isEmpty', 'isNotEmpty'])
 
 export class BitableQueryPlugin implements IWorkflowPlugin {
   async execute(context: WorkflowContext, config: Record<string, unknown>): Promise<StepResult> {
     const startTime = Date.now()
+    let resolvedFilterForDebug: QueryFilter | undefined
 
     const {
       app_token,
@@ -84,36 +49,73 @@ export class BitableQueryPlugin implements IWorkflowPlugin {
 
     try {
       const resolverMaps = await loadFieldResolverMaps(String(app_token), String(table_id))
+      const codecWarnings: CodecWarning[] = []
 
       let resolvedFilter: QueryFilter | undefined
       if (filter && typeof filter === 'object') {
         const rawFilter = filter as QueryFilter
+        const invalidConditions: Array<{ field_name: string; operator: FilterOperator }> = []
         const resolvedConditions = (rawFilter.conditions || []).map((condition) => {
-          const resolved = resolveFieldName(condition.field_name, resolverMaps)
+          const resolved = resolveFieldMeta(condition.field_name, resolverMaps)
           if (resolved.missing) {
             throw new Error(`Missing field mapping for field ID: ${condition.field_name}`)
           }
 
-          const normalizedValue = condition.value !== undefined
-            ? normalizeFilterValue(condition.value)
-            : undefined
+          const encodedValue = encodeFieldValueForFilter(condition.value, {
+            appToken: String(app_token),
+            tableId: String(table_id),
+            fieldName: resolved.fieldName,
+            fieldId: resolved.fieldId,
+            rawFieldType: resolved.fieldType,
+            operator: condition.operator,
+          })
+          codecWarnings.push(...encodedValue.warnings)
+          const requiresNonEmptyValue = !EMPTY_VALUE_OPERATORS.has(condition.operator)
+          const hasValue = Array.isArray(encodedValue.value) && encodedValue.value.length > 0
+          if (requiresNonEmptyValue && !hasValue) {
+            invalidConditions.push({
+              field_name: resolved.fieldName,
+              operator: condition.operator,
+            })
+          }
 
           return {
             ...condition,
             field_name: resolved.fieldName,
-            value: normalizedValue,
+            value: encodedValue.value,
           }
         })
+
+        if (invalidConditions.length > 0) {
+          const logger = createLoggerWithTrace(context.trigger?.traceId || 'WF-CODEC', 'bitable-query.ts')
+          logger.warn('query filter 条件值为空，跳过查询', {
+            invalidConditions,
+          })
+
+          return okStep(
+            {
+              records: [],
+              total: 0,
+              hasMore: false,
+              pageToken: null,
+              reason: 'filter_value_missing',
+              invalidConditions,
+              warnings: formatCodecWarnings(codecWarnings),
+            },
+            Date.now() - startTime,
+          )
+        }
 
         resolvedFilter = {
           conjunction: rawFilter.conjunction || 'and',
           conditions: resolvedConditions,
         }
+        resolvedFilterForDebug = resolvedFilter
       }
 
       const resolvedSort = Array.isArray(sort)
         ? (sort as QuerySort[]).map((item) => {
-            const resolved = resolveFieldName(item.field_name, resolverMaps)
+            const resolved = resolveFieldMeta(item.field_name, resolverMaps)
             if (resolved.missing) {
               throw new Error(`Missing field mapping for field ID: ${item.field_name}`)
             }
@@ -166,6 +168,11 @@ export class BitableQueryPlugin implements IWorkflowPlugin {
 
       const items = res?.data?.items || []
 
+      if (codecWarnings.length > 0) {
+        const logger = createLoggerWithTrace(context.trigger?.traceId || 'WF-CODEC', 'bitable-query.ts')
+        logger.warn('query filter 字段 codec 降级透传', formatCodecWarnings(codecWarnings))
+      }
+
       return okStep(
         {
           records: items.map((item: any) => ({
@@ -175,10 +182,43 @@ export class BitableQueryPlugin implements IWorkflowPlugin {
           total: res?.data?.total,
           hasMore: res?.data?.has_more,
           pageToken: res?.data?.page_token,
+          warnings: formatCodecWarnings(codecWarnings),
         },
         Date.now() - startTime,
       )
     } catch (error: any) {
+      if (error instanceof FieldCodecError) {
+        return errStep(
+          error.code,
+          error.message,
+          Date.now() - startTime,
+          error.details,
+        )
+      }
+
+      const feishuError = extractFeishuErrorPayload(error)
+      if (feishuError) {
+        const logger = createLoggerWithTrace(context.trigger?.traceId || 'WF-CODEC', 'bitable-query.ts')
+        logger.error('query 调用飞书接口失败', {
+          feishuError,
+          filter: resolvedFilterForDebug,
+        })
+
+        const feishuMessage = feishuError.msg || feishuError.message || 'Failed to query records'
+        const message = (feishuMessage === 'InvalidFilter' && resolvedFilterForDebug)
+          ? `InvalidFilter: ${JSON.stringify(resolvedFilterForDebug)}`
+          : feishuMessage
+        return errStep(
+          'FEISHU_API_ERROR',
+          message,
+          Date.now() - startTime,
+          {
+            ...feishuError,
+            filter: resolvedFilterForDebug,
+          },
+        )
+      }
+
       return errStep(
         'PLUGIN_ERROR',
         `Failed to query records: ${error.message || error}`,

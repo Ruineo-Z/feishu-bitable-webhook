@@ -3,12 +3,19 @@ import { WorkflowContext } from '../../src/workflow/types';
 
 const plugin = new ConditionPlugin();
 
-async function testCondition(name: string, config: any, contextData: any, expectedPass: boolean) {
+async function testCondition(
+  name: string,
+  config: any,
+  contextData: any,
+  expectedPass: boolean,
+  beforeData: any = {},
+) {
   const context: WorkflowContext = {
     trigger: {
       record_id: 'rec1',
       record: {
-        fields: contextData
+        fields: contextData,
+        beforeFields: beforeData,
       },
       action_list: [{ action: 'update' }]
     },
@@ -118,6 +125,28 @@ async function runTests() {
     { logic: 'AND', expressions: [{ field: 'desc', operator: 'contains', value: 'urgent' }] },
     { desc: 'This is an urgent task' },
     true
+  );
+
+  // 7. source-aware 条件
+  await testCondition('Source Before Exists (True)',
+    { logic: 'AND', expressions: [{ field: '账号第一负责人', operator: 'exists', source: 'before' }] },
+    { 账号第一负责人: [] },
+    true,
+    { 账号第一负责人: [{ id: 'ou_xxx' }] },
+  );
+
+  await testCondition('Source Before Exists (False when empty)',
+    { logic: 'AND', expressions: [{ field: '账号第一负责人', operator: 'exists', source: 'before' }] },
+    { 账号第一负责人: [{ id: 'ou_after' }] },
+    false,
+    { 账号第一负责人: [] },
+  );
+
+  await testCondition('Source Default After (Backward Compatible)',
+    { logic: 'AND', expressions: [{ field: '账号当前昵称', operator: 'equals', value: '新昵称' }] },
+    { 账号当前昵称: '新昵称' },
+    true,
+    { 账号当前昵称: '旧昵称' },
   );
 
   console.log('Tests finished.');

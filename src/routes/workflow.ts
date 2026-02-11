@@ -143,6 +143,142 @@ const WorkflowCreateExamples = {
       },
     },
   },
+  sourceAwareGuardWithTemplatePolicy: {
+    summary: 'before/after 来源 + step.when + templatePolicy',
+    value: {
+      name: 'A负责人变更同步到B',
+      scope: {
+        type: 'table',
+        appToken: 'KaWjbBvGeaG0Fus5bwWcKLsJnfb',
+        tableId: 'tbl6VxIEVkc1eY3S',
+        eventTypes: ['record_updated'],
+      },
+      isActive: true,
+      config: {
+        id: 'wf_sync_owner_a_to_b_001',
+        name: 'A负责人变更同步到B',
+        trigger: {
+          type: 'lark.bitable.record.changed',
+          config: {
+            app_token: 'KaWjbBvGeaG0Fus5bwWcKLsJnfb',
+            table_id: 'tbl6VxIEVkc1eY3S',
+            actions: ['record_updated'],
+          },
+        },
+        steps: [
+          {
+            id: 'c1',
+            type: 'condition',
+            name: '负责人变化且昵称非空',
+            config: {
+              logic: 'AND',
+              expressions: [
+                { field: '账号第一负责人', operator: 'changed', source: 'after' },
+                { field: '账号当前昵称', operator: 'exists', source: 'after' },
+              ],
+            },
+            onTrue: 'd1',
+            onFalse: 'end',
+          },
+          {
+            id: 'd1',
+            type: 'action.bitable.delete',
+            name: '旧负责人有值才删除',
+            templatePolicy: 'skip',
+            when: {
+              logic: 'AND',
+              expressions: [{ field: '账号第一负责人', operator: 'exists', source: 'before' }],
+            },
+            config: {
+              app_token: 'KaWjbBvGeaG0Fus5bwWcKLsJnfb',
+              table_id: 'tblhV7wQW9uqdkMd',
+              filter: {
+                conjunction: 'and',
+                conditions: [
+                  { field_name: '第一负责人', operator: 'is', value: '${trigger.record.beforeFields.账号第一负责人}' },
+                  { field_name: '账号当前昵称', operator: 'is', value: '${trigger.record.fields.账号当前昵称}' },
+                ],
+              },
+            },
+            next: 'c2',
+          },
+          {
+            id: 'c2',
+            type: 'condition',
+            name: '变更后负责人有值才创建',
+            config: {
+              logic: 'AND',
+              expressions: [{ field: '账号第一负责人', operator: 'exists', source: 'after' }],
+            },
+            onTrue: 'a1',
+            onFalse: 'end',
+          },
+          {
+            id: 'a1',
+            type: 'action.bitable.create',
+            templatePolicy: 'fail',
+            config: {
+              app_token: 'KaWjbBvGeaG0Fus5bwWcKLsJnfb',
+              table_id: 'tblhV7wQW9uqdkMd',
+              fields: {
+                第一负责人: '${trigger.record.fields.账号第一负责人}',
+                账号当前昵称: '${trigger.record.fields.账号当前昵称}',
+              },
+            },
+            next: 'end',
+          },
+          {
+            id: 'end',
+            type: 'condition',
+            name: '结束',
+            config: {
+              logic: 'AND',
+              expressions: [{ field: '账号当前昵称', operator: 'exists', source: 'after' }],
+            },
+          },
+        ],
+      },
+    },
+  },
+  codecAwareBitableAction: {
+    summary: 'codec 感知字段值示例（文本/人员自动转换）',
+    value: {
+      name: '字段类型自动转换示例',
+      scope: {
+        type: 'table',
+        appToken: 'KaWjbBvGeaG0Fus5bwWcKLsJnfb',
+        tableId: 'tbl6VxIEVkc1eY3S',
+        eventTypes: ['record_updated'],
+      },
+      isActive: true,
+      config: {
+        id: 'wf_codec_demo_001',
+        name: '字段类型自动转换示例',
+        trigger: {
+          type: 'lark.bitable.record.changed',
+          config: {
+            app_token: 'KaWjbBvGeaG0Fus5bwWcKLsJnfb',
+            table_id: 'tbl6VxIEVkc1eY3S',
+            actions: ['record_updated'],
+          },
+        },
+        steps: [
+          {
+            id: 'create_b_record',
+            type: 'action.bitable.create',
+            config: {
+              app_token: 'KaWjbBvGeaG0Fus5bwWcKLsJnfb',
+              table_id: 'tblhV7wQW9uqdkMd',
+              fields: {
+                账号当前昵称: '${trigger.record.fields.账号当前昵称.0.text}',
+                第一负责人: '${trigger.record.fields.账号第一负责人}',
+              },
+            },
+          },
+        ],
+      },
+    },
+  },
 }
 
 const WorkflowIdParamSchema = z.object({
@@ -166,6 +302,7 @@ const PaginationMetaSchema = z.object({
 const WorkflowSummarySchema = z.object({
   id: z.string(),
   name: z.string(),
+  config: WorkflowConfigSchema.optional(),
   is_active: z.boolean(),
   scope: WorkflowScopeSchema,
   created_at: z.string(),
@@ -205,6 +342,7 @@ function toWorkflowSummaryResponse(record: WorkflowSummaryRecord) {
   return {
     id: record.id,
     name: record.name,
+    config: record.config || undefined,
     is_active: record.is_active,
     scope: resolveScopeFromRecord(record),
     created_at: record.created_at,
@@ -360,7 +498,10 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
       path: '/api/workflows',
       tags: ['Workflows'],
       summary: '创建工作流',
-      description: '根据请求体中的名称、Workflow DSL（支持 DAG 分支）配置与 table 作用域创建新工作流。支持可选 eventTypes 过滤。',
+      description:
+        '根据请求体中的名称、Workflow DSL（支持 DAG 分支）配置与 table 作用域创建新工作流。支持可选 eventTypes 过滤。' +
+        'workflow DSL 支持 condition.expressions[].source（before/after）、step.when 守卫与 templatePolicy（fail/skip）。' +
+        'workflow 运行时会按目标字段类型自动进行值转换：文本字段支持富文本模板转字符串，人员字段支持 open_id 或 [{id}] 结构。',
       request: {
         body: {
           content: {
@@ -439,7 +580,9 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
       tags: ['Workflows'],
       summary: '更新工作流',
       description:
-        '根据工作流 ID 更新名称、配置、作用域或启用状态。更新时会保证 scope、trigger.config 与 trigger_actions 一致。',
+        '根据工作流 ID 更新名称、配置、作用域或启用状态。更新时会保证 scope、trigger.config 与 trigger_actions 一致。' +
+        'workflow DSL 支持 condition.expressions[].source（before/after）、step.when 守卫与 templatePolicy（fail/skip）。' +
+        'workflow 运行时会按目标字段类型自动进行值转换，并在错误时返回字段级诊断信息。',
       request: {
         params: WorkflowIdParamSchema,
         body: {
