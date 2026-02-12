@@ -1,4 +1,5 @@
 import { parseEventTypesFromConfig, parseEventTypesFromText } from './event-types'
+import { validateFormNodeSchema } from './node-registry'
 import type {
   AdapterError,
   ConditionFormModel,
@@ -299,6 +300,11 @@ export function encodeFormModel(model: FormModel): EncodeResult {
 
   if (!Array.isArray(model.steps) || model.steps.length === 0) {
     throw createModelError('至少保留一个步骤')
+  }
+
+  const nodeSchemaErrors = validateFormNodeSchema(model)
+  if (nodeSchemaErrors.length > 0) {
+    throw createModelError(nodeSchemaErrors.join('；'))
   }
 
   const scope = buildScope(model)

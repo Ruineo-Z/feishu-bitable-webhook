@@ -29,6 +29,25 @@ function testEncodeVisualModel() {
   assert.equal(encoded.config.steps.length, model.steps.length)
 }
 
+function testEncodeRejectsUnsupportedStepType() {
+  const model = createDefaultFormModel()
+  model.name = 'Invalid step type'
+  model.appToken = 'app_invalid'
+  model.tableId = 'tbl_invalid'
+  model.steps[0].type = 'action.bitable.update'
+
+  let caught: unknown = null
+  try {
+    encodeFormModel(model)
+  } catch (error) {
+    caught = error
+  }
+
+  assert.ok(caught)
+  assert.equal((caught as { code?: string }).code, 'MODEL_INVALID')
+  assert.match((caught as { message?: string }).message || '', /类型不受支持/)
+}
+
 function testDecodeUnsupportedDsl() {
   const unsupportedDsl = {
     id: 'wf_xxx',
@@ -78,6 +97,7 @@ function testRoundTripParseSerialize() {
 
 function run() {
   testEncodeVisualModel()
+  testEncodeRejectsUnsupportedStepType()
   testDecodeUnsupportedDsl()
   testRoundTripParseSerialize()
   console.log('adapter tests passed')

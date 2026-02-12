@@ -247,9 +247,43 @@ npx tsx tests/workflow/bitable-plugins.test.ts
 # Workflow Studio 适配层单测
 bun run test:workflow-studio:adapter
 
+# Workflow Studio 节点注册表单测
+bun run test:workflow-studio:node-registry
+
 # Workflow Studio 页面交互测试（Vitest）
 bun run ui:test
 ```
+
+
+## Workflow Studio 节点扩展与联调
+
+### 节点类型扩展方式
+
+1. 在 `web/workflow-studio/src/lib/node-registry.ts` 中扩展 `STEP_TYPE_OPTIONS` 与 `STEP_TYPE_LABELS`。
+2. 在 `NODE_CATALOG_ITEMS` 中新增节点目录项，补齐 `category`、`stepType`、`configSection` 与 `suggestedName`。
+3. 在 `web/workflow-studio/src/lib/adapter.ts` 的 `createDefaultStep` 中为新 `step.type` 提供默认 `configText`（或条件分支默认结构）。
+4. 如新增特殊动作表单，可在 `web/workflow-studio/src/components/StepActionConfigEditor.tsx` 增加对应可视化编辑器分支。
+
+### 配置 Schema 约束
+
+- 节点级校验在 `validateStepModel` / `validateFormNodeSchema` 中维护。
+- 提交前统一由 `encodeFormModel` 调用校验，返回 `MODEL_INVALID` 阻断非法 payload。
+- 约束重点：`step.id` 非空且唯一、`step.type` 在支持白名单内、条件节点至少 1 条表达式、动作节点 `configText` 非空。
+
+### 联调说明
+
+- 可视化模式提交：`encodeFormModel` -> `createWorkflow` / `updateWorkflow`（保持现有 API 契约不变）。
+- 编辑模式回填：`fetchWorkflowDetail` -> `decodeConfigToFormModel`，不支持结构自动降级到高级 JSON 模式。
+- 错误提示统一通过 `toUserFacingError` 展示 `错误码 + 文案`，便于排查后端返回。
+
+### React Flow 迁移判定条件（可选）
+
+满足任一条件时，建议将当前自研画布迁移到 React Flow：
+
+- 单流程节点数长期超过 80，手写交互维护成本显著上升。
+- 需要批量多选、框选、自动布局、子流程折叠等高级图编辑能力。
+- 连线交互需要锚点编辑、智能避让、复杂路径路由。
+- 画布性能在业务高峰下出现明显卡顿，且常规优化后仍无法满足体验指标。
 
 ## Project Structure
 

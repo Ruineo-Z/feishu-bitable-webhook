@@ -15,6 +15,7 @@
     "ui:build": "npm --prefix web/workflow-studio run build",
     "ui:preview": "npm --prefix web/workflow-studio run preview",
     "test:workflow-studio:adapter": "npx tsx tests/workflow-studio/adapter.test.ts",
+    "test:workflow-studio:node-registry": "npx tsx tests/workflow-studio/node-registry.test.ts",
     "ui:test": "npm --prefix web/workflow-studio run test"
   },
   "dependencies": {
