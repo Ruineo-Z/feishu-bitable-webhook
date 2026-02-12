@@ -92,6 +92,24 @@ const sampleDetail: WorkflowDetail = {
   },
 }
 
+function clickCanvasNode(nodeName: '触发器' | '条件' | '动作' | '结束') {
+  const canvas = screen.getByLabelText('workflow-canvas') as HTMLElement
+  const selectorByNode = {
+    触发器: '.canvas-node.node-trigger',
+    条件: '.canvas-node.node-condition',
+    动作: '.canvas-node.node-action',
+    结束: '.canvas-node.node-end',
+  } as const
+
+  const target = canvas.querySelector(selectorByNode[nodeName]) as HTMLElement | null
+  expect(target).toBeTruthy()
+  fireEvent.click(target as HTMLElement)
+}
+
+function openConditionInspector() {
+  clickCanvasNode('条件')
+}
+
 describe('Workflow Studio App', () => {
   beforeEach(() => {
     vi.stubGlobal('confirm', vi.fn(() => true))
@@ -112,9 +130,12 @@ describe('Workflow Studio App', () => {
       expect(screen.getByText('当前没有工作流数据，可先创建一个。')).toBeInTheDocument()
     })
 
+    openConditionInspector()
+    clickCanvasNode('触发器')
+
     fireEvent.change(screen.getByLabelText('工作流名称'), { target: { value: '模式切换测试' } })
-    fireEvent.change(screen.getByLabelText('appToken'), { target: { value: 'app_token_demo' } })
-    fireEvent.change(screen.getByLabelText('tableId'), { target: { value: 'tbl_demo' } })
+    fireEvent.change(screen.getByLabelText(/appToken/), { target: { value: 'app_token_demo' } })
+    fireEvent.change(screen.getByLabelText(/tableId/), { target: { value: 'tbl_demo' } })
 
     fireEvent.click(screen.getByRole('tab', { name: '高级 JSON 模式' }))
     expect(screen.getByText('高级 JSON（DSL）')).toBeInTheDocument()
@@ -122,8 +143,37 @@ describe('Workflow Studio App', () => {
     fireEvent.click(screen.getByRole('tab', { name: '可视化模式' }))
 
     await waitFor(() => {
-      expect(screen.getByText('步骤 3：步骤配置（可视化）')).toBeInTheDocument()
+      expect(screen.getByLabelText('工作流名称')).toBeInTheDocument()
     })
+  })
+
+  it('点击节点仅展示该节点配置', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => okList([], 0))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByText('当前没有工作流数据，可先创建一个。')).toBeInTheDocument()
+    })
+
+    clickCanvasNode('触发器')
+    expect(screen.getByLabelText('工作流名称')).toBeInTheDocument()
+    expect(screen.queryByText('执行预演摘要')).not.toBeInTheDocument()
+
+    clickCanvasNode('条件')
+    expect(screen.getByText('步骤 3：条件配置')).toBeInTheDocument()
+    expect(screen.queryByLabelText('工作流名称')).not.toBeInTheDocument()
+
+    clickCanvasNode('动作')
+    expect(screen.getByText('添加节点')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /创建记录/ }))
+    expect(screen.getByText('步骤 3：动作配置')).toBeInTheDocument()
+    expect(screen.queryByText('执行预演摘要')).not.toBeInTheDocument()
+
+    clickCanvasNode('结束')
+    expect(screen.getByText('执行预演摘要')).toBeInTheDocument()
+    expect(screen.queryByLabelText('工作流名称')).not.toBeInTheDocument()
   })
 
   it('支持创建工作流提交', async () => {
@@ -141,10 +191,14 @@ describe('Workflow Studio App', () => {
       expect(screen.getByText('当前没有工作流数据，可先创建一个。')).toBeInTheDocument()
     })
 
-    fireEvent.change(screen.getByLabelText('工作流名称'), { target: { value: '创建测试流程' } })
-    fireEvent.change(screen.getByLabelText('appToken'), { target: { value: 'app_token_demo' } })
-    fireEvent.change(screen.getByLabelText('tableId'), { target: { value: 'tbl_demo' } })
+    openConditionInspector()
+    clickCanvasNode('触发器')
 
+    fireEvent.change(screen.getByLabelText('工作流名称'), { target: { value: '创建测试流程' } })
+    fireEvent.change(screen.getByLabelText(/appToken/), { target: { value: 'app_token_demo' } })
+    fireEvent.change(screen.getByLabelText(/tableId/), { target: { value: 'tbl_demo' } })
+
+    clickCanvasNode('结束')
     fireEvent.click(screen.getByRole('button', { name: '创建工作流' }))
 
     await waitFor(() => {
@@ -184,6 +238,70 @@ describe('Workflow Studio App', () => {
     })
   })
 
+
+  it('节点选中才显示右侧面板，取消选中后隐藏', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => okList([], 0))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByText('当前没有工作流数据，可先创建一个。')).toBeInTheDocument()
+    })
+
+    expect(screen.queryByText('节点配置')).not.toBeInTheDocument()
+
+    clickCanvasNode('条件')
+    expect(screen.getByText('节点配置')).toBeInTheDocument()
+
+    clickCanvasNode('条件')
+    expect(screen.queryByText('节点配置')).not.toBeInTheDocument()
+  })
+
+  it('支持通过节点目录添加动作节点', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => okList([], 0))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByText('当前没有工作流数据，可先创建一个。')).toBeInTheDocument()
+    })
+
+    clickCanvasNode('动作')
+    expect(screen.getByText('添加节点')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /创建记录/ }))
+
+    await waitFor(() => {
+      expect(screen.getByText('步骤 3：动作配置')).toBeInTheDocument()
+    })
+
+    expect(screen.getByText('节点配置')).toBeInTheDocument()
+  })
+
+  it('支持画布缩放控制并渲染分支贝塞尔连线', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => okList([], 0))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { container } = render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByText('当前没有工作流数据，可先创建一个。')).toBeInTheDocument()
+    })
+
+    expect(screen.getByText('100%')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '放大画布' }))
+    expect(screen.getByText('112%')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '缩小画布' }))
+    expect(screen.queryByText('112%')).not.toBeInTheDocument()
+    expect(screen.getByText(/^[0-9]+%$/)).toBeInTheDocument()
+
+    const edgePaths = container.querySelectorAll('.canvas-edges path')
+    expect(edgePaths.length).toBe(4)
+  })
+
   it('支持编辑工作流加载详情', async () => {
     const fetchMock = vi
       .fn()
@@ -204,7 +322,10 @@ describe('Workflow Studio App', () => {
     fireEvent.click(within(card as HTMLElement).getByRole('button', { name: '编辑' }))
 
     await waitFor(() => {
-      expect(screen.getByText(`编辑工作流（${sampleDetail.id}）`)).toBeInTheDocument()
+      const detailCall = fetchMock.mock.calls.find(
+        (call) => String(call[0]) === `/api/workflows/${encodeURIComponent(sampleDetail.id)}`,
+      )
+      expect(detailCall).toBeTruthy()
     })
   })
 })
