@@ -30,7 +30,6 @@ dist-ssr
 tmp/
 
 # Local experiment assets
-.codex/
 design-system/
 src/ui/workflows/style-lab*
 

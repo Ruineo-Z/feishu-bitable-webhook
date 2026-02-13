@@ -1,0 +1,61 @@
+{
+  "operation": "update",
+  "workflowId": "wf_existing_id",
+  "name": "wf_更新后名称",
+  "isActive": true,
+  "dryRun": true,
+  "scope": {
+    "type": "table",
+    "appToken": "app_xxx",
+    "tableId": "tbl_xxx",
+    "eventTypes": ["record_updated"]
+  },
+  "config": {
+    "id": "wf_existing_id",
+    "name": "wf_更新后名称",
+    "trigger": {
+      "type": "lark.bitable.record.changed",
+      "config": {
+        "app_token": "app_xxx",
+        "table_id": "tbl_xxx"
+      }
+    },
+    "steps": [
+      {
+        "id": "step_condition",
+        "type": "condition",
+        "config": {
+          "logic": "AND",
+          "expressions": [
+            {
+              "field": "状态",
+              "operator": "equals",
+              "value": "已完成",
+              "source": "after"
+            }
+          ]
+        },
+        "onTrue": "step_done",
+        "onFalse": "step_pending"
+      },
+      {
+        "id": "step_done",
+        "type": "action.feishu.message",
+        "config": {
+          "receive_id": "ou_xxx",
+          "receive_id_type": "open_id",
+          "content": "{\"text\":\"【记录更新通知】\\n<at user_id=\\\"${trigger.record.fields.第一负责人.0.id}\\\">负责人</at>\\n状态: 已完成\\n记录ID: ${trigger.record_id}\"}"
+        }
+      },
+      {
+        "id": "step_pending",
+        "type": "action.feishu.message",
+        "config": {
+          "receive_id": "ou_xxx",
+          "receive_id_type": "open_id",
+          "content": "{\"text\":\"【记录更新通知】\\n<at user_id=\\\"${trigger.record.fields.第一负责人.0.id}\\\">负责人</at>\\n状态: 待处理\\n记录ID: ${trigger.record_id}\"}"
+        }
+      }
+    ]
+  }
+}

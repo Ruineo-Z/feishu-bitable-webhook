@@ -1,0 +1,34 @@
+{
+  "operation": "create",
+  "name": "wf_示例",
+  "isActive": true,
+  "dryRun": true,
+  "scope": {
+    "type": "table",
+    "appToken": "app_xxx",
+    "tableId": "tbl_xxx",
+    "eventTypes": ["record_updated"]
+  },
+  "config": {
+    "id": "wf_demo_create",
+    "name": "wf_示例",
+    "trigger": {
+      "type": "lark.bitable.record.changed",
+      "config": {
+        "app_token": "app_xxx",
+        "table_id": "tbl_xxx"
+      }
+    },
+    "steps": [
+      {
+        "id": "step_message",
+        "type": "action.feishu.message",
+        "config": {
+          "receive_id": "ou_xxx",
+          "receive_id_type": "open_id",
+          "content": "{\"text\":\"【记录创建通知】\\n<at user_id=\\\"${trigger.record.fields.第一负责人.0.id}\\\">负责人</at>\\n账号当前昵称: ${trigger.record.fields.账号当前昵称}\\n记录ID: ${trigger.record_id}\"}"
+        }
+      }
+    ]
+  }
+}

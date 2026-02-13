@@ -19,6 +19,9 @@ import { workflowsDb, summarizeWorkflowCandidateSources } from './db/workflows'
 registerStandardPlugins()
 const workflowEngine = new WorkflowEngine()
 
+const OWNER_FIELD_ALIASES = ['账号第一负责人', '第一负责人'] as const
+const NICKNAME_FIELD_ALIASES = ['账号当前昵称', '当前昵称'] as const
+
 const processedEvents = new Set<string>()
 const processingEvents = new Set<string>()
 const PROCESSED_EVENTS_TTL = 60 * 60 * 1000
@@ -180,6 +183,161 @@ function summarizeWorkflowResult(steps: Record<string, { success: boolean; error
   }
 }
 
+function summarizeStepStats(steps: Record<string, { success: boolean; skipped?: boolean }>) {
+  const values = Object.values(steps)
+  return {
+    total: values.length,
+    success: values.filter((step) => step.success && !step.skipped).length,
+    skipped: values.filter((step) => step.skipped).length,
+    failed: values.filter((step) => !step.success).length,
+  }
+}
+
+function extractUserIds(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const ids = value
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null
+      const record = item as Record<string, unknown>
+      if (typeof record.id === 'string' && record.id) return record.id
+      if (typeof record.open_id === 'string' && record.open_id) return record.open_id
+      if (typeof record.user_id === 'string' && record.user_id) return record.user_id
+      if (typeof record.userId === 'string' && record.userId) return record.userId
+      return null
+    })
+    .filter((item): item is string => Boolean(item))
+
+  return Array.from(new Set(ids))
+}
+
+function normalizeRawUserId(user: unknown): string | null {
+  if (!user || typeof user !== 'object') {
+    return null
+  }
+
+  const record = user as Record<string, unknown>
+  const nestedUserId = record.user_id
+
+  if (nestedUserId && typeof nestedUserId === 'object') {
+    const nested = nestedUserId as Record<string, unknown>
+    if (typeof nested.open_id === 'string' && nested.open_id) return nested.open_id
+    if (typeof nested.user_id === 'string' && nested.user_id) return nested.user_id
+    if (typeof nested.union_id === 'string' && nested.union_id) return nested.union_id
+  }
+
+  if (typeof record.id === 'string' && record.id) return record.id
+  if (typeof record.open_id === 'string' && record.open_id) return record.open_id
+  if (typeof record.user_id === 'string' && record.user_id) return record.user_id
+  if (typeof record.userId === 'string' && record.userId) return record.userId
+
+  return null
+}
+
+function normalizeRawUserName(user: unknown): string | null {
+  if (!user || typeof user !== 'object') {
+    return null
+  }
+
+  const record = user as Record<string, unknown>
+  if (typeof record.name === 'string' && record.name.trim().length > 0) return record.name.trim()
+  if (typeof record.enName === 'string' && record.enName.trim().length > 0) return record.enName.trim()
+  if (typeof record.user_name === 'string' && record.user_name.trim().length > 0) return record.user_name.trim()
+  if (typeof record.display_name === 'string' && record.display_name.trim().length > 0) return record.display_name.trim()
+
+  return null
+}
+
+function buildUserNameIndexFromRawEvent(rawEvent: unknown): Map<string, string> {
+  const index = new Map<string, string>()
+  const event = (rawEvent || {}) as Record<string, unknown>
+  const actionList = Array.isArray(event.action_list) ? event.action_list : []
+
+  for (const action of actionList) {
+    if (!action || typeof action !== 'object') continue
+    const actionObj = action as Record<string, unknown>
+
+    for (const key of ['before_value', 'after_value'] as const) {
+      const values = actionObj[key]
+      if (!Array.isArray(values)) continue
+
+      for (const item of values) {
+        if (!item || typeof item !== 'object') continue
+        const itemObj = item as Record<string, unknown>
+        const identityValue = itemObj.field_identity_value
+        if (!identityValue || typeof identityValue !== 'object') continue
+
+        const users = (identityValue as Record<string, unknown>).users
+        if (!Array.isArray(users)) continue
+
+        for (const user of users) {
+          const id = normalizeRawUserId(user)
+          const name = normalizeRawUserName(user)
+          if (!id || !name || index.has(id)) continue
+          index.set(id, name)
+        }
+      }
+    }
+  }
+
+  return index
+}
+
+function toSummaryText(value: unknown, userNameIndex?: Map<string, string>): string {
+  if (value === null || value === undefined || value === '') {
+    return '空'
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '空'
+    const ids = extractUserIds(value)
+    if (ids.length > 0) {
+      return ids
+        .map((id) => {
+          const userName = userNameIndex?.get(id)
+          return userName ? `${userName} (${id})` : id
+        })
+        .join(', ')
+    }
+
+    const compact = value
+      .map((item) => {
+        if (typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean') {
+          return String(item)
+        }
+        try {
+          return JSON.stringify(item)
+        } catch {
+          return String(item)
+        }
+      })
+      .filter((item) => item.length > 0)
+      .join(', ')
+
+    return compact || '空'
+  }
+
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+function hasChanged(beforeValue: unknown, afterValue: unknown): boolean {
+  try {
+    return JSON.stringify(beforeValue) !== JSON.stringify(afterValue)
+  } catch {
+    return String(beforeValue) !== String(afterValue)
+  }
+}
+
 function previewRawValue(value: unknown, maxLen = 120): string | null {
   if (value === undefined || value === null) return null
   const str = String(value)
@@ -271,11 +429,18 @@ function summarizeRawEvent(rawEvent: unknown) {
   }
 }
 
-function pickDiagnosticsField(snapshot: Record<string, unknown>, fieldName: string) {
-  if (!(fieldName in snapshot)) {
-    return null
+function pickDiagnosticsField(snapshot: Record<string, unknown>, fieldNames: string | readonly string[]) {
+  const candidates = Array.isArray(fieldNames) ? fieldNames : [fieldNames]
+
+  for (const fieldName of candidates) {
+    if (!(fieldName in snapshot)) {
+      continue
+    }
+
+    return snapshot[fieldName]
   }
-  return snapshot[fieldName]
+
+  return null
 }
 
 async function processEvent(rawEvent: unknown, version: string) {
@@ -324,15 +489,33 @@ async function processEvent(rawEvent: unknown, version: string) {
   try {
     const mappedAfter = await mapFieldsByName(appToken, tableId, fields, traceId)
     const mappedBefore = await mapFieldsByName(appToken, tableId, beforeFields, traceId)
+    const userNameIndex = buildUserNameIndexFromRawEvent(rawEvent)
+
+    const ownerBefore = pickDiagnosticsField(mappedBefore.mappedFields, OWNER_FIELD_ALIASES)
+    const ownerAfter = pickDiagnosticsField(mappedAfter.mappedFields, OWNER_FIELD_ALIASES)
+    const nicknameBefore = pickDiagnosticsField(mappedBefore.mappedFields, NICKNAME_FIELD_ALIASES)
+    const nicknameAfter = pickDiagnosticsField(mappedAfter.mappedFields, NICKNAME_FIELD_ALIASES)
 
     log.debug('关键字段快照', {
       eventId,
       eventType,
       recordId,
-      ownerBefore: pickDiagnosticsField(mappedBefore.mappedFields, '账号第一负责人'),
-      ownerAfter: pickDiagnosticsField(mappedAfter.mappedFields, '账号第一负责人'),
-      nicknameBefore: pickDiagnosticsField(mappedBefore.mappedFields, '账号当前昵称'),
-      nicknameAfter: pickDiagnosticsField(mappedAfter.mappedFields, '账号当前昵称'),
+      ownerBefore,
+      ownerAfter,
+      nicknameBefore,
+      nicknameAfter,
+    })
+
+    log.info('事件业务摘要', {
+      eventId,
+      eventType,
+      recordId,
+      ownerChanged: hasChanged(ownerBefore, ownerAfter),
+      ownerBefore: toSummaryText(ownerBefore, userNameIndex),
+      ownerAfter: toSummaryText(ownerAfter, userNameIndex),
+      nicknameChanged: hasChanged(nicknameBefore, nicknameAfter),
+      nicknameBefore: toSummaryText(nicknameBefore),
+      nicknameAfter: toSummaryText(nicknameAfter),
     })
 
     const missingFieldIds = new Set<string>([
@@ -400,6 +583,7 @@ async function processEvent(rawEvent: unknown, version: string) {
 
             const workflowContext = await workflowEngine.execute(workflow.config, triggerContext)
             const summary = summarizeWorkflowResult(workflowContext.steps as Record<string, { success: boolean; error?: string; output?: unknown }>)
+            const stepStats = summarizeStepStats(workflowContext.steps as Record<string, { success: boolean; skipped?: boolean }>)
 
             logExecution({
               rule_id: null,
@@ -428,14 +612,70 @@ async function processEvent(rawEvent: unknown, version: string) {
               source,
               status: summary.status,
               error: summary.errorMessage,
+              stepStats,
             }
           }),
+        )
+
+        const fulfilledExecutions = executionResults
+          .filter((item): item is PromiseFulfilledResult<{
+            workflowId: string
+            workflowName: string
+            source: string
+            status: 'success' | 'failed'
+            error: string | null
+            stepStats: {
+              total: number
+              success: number
+              skipped: number
+              failed: number
+            }
+          }> => item.status === 'fulfilled')
+          .map((item) => item.value)
+
+        const executionSummary = fulfilledExecutions.reduce(
+          (acc, item) => {
+            if (item.status === 'success') {
+              acc.workflowSuccess += 1
+            } else {
+              acc.workflowFailed += 1
+            }
+
+            acc.stepTotal += item.stepStats.total
+            acc.stepSuccess += item.stepStats.success
+            acc.stepSkipped += item.stepStats.skipped
+            acc.stepFailed += item.stepStats.failed
+
+            return acc
+          },
+          {
+            workflowSuccess: 0,
+            workflowFailed: 0,
+            stepTotal: 0,
+            stepSuccess: 0,
+            stepSkipped: 0,
+            stepFailed: 0,
+          },
         )
 
         const failedExecutions = executionResults.filter((item) => item.status === 'rejected')
         if (failedExecutions.length > 0) {
           log.error(`工作流执行阶段发生 ${failedExecutions.length} 个异常`, failedExecutions)
         }
+
+        log.info('工作流执行摘要', {
+          eventId,
+          eventType,
+          recordId,
+          workflowTotal: executableWorkflows.length,
+          workflowSuccess: executionSummary.workflowSuccess,
+          workflowFailed: executionSummary.workflowFailed,
+          workflowExceptions: failedExecutions.length,
+          stepTotal: executionSummary.stepTotal,
+          stepSuccess: executionSummary.stepSuccess,
+          stepSkipped: executionSummary.stepSkipped,
+          stepFailed: executionSummary.stepFailed,
+        })
       }
     } else {
       log.debug('未命中任何工作流候选', {

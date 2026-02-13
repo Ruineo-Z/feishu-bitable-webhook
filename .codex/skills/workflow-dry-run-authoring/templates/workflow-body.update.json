@@ -1,0 +1,22 @@
+{
+  "name": "wf_更新后名称",
+  "isActive": true,
+  "scope": {
+    "type": "table",
+    "appToken": "app_xxx",
+    "tableId": "tbl_xxx",
+    "eventTypes": ["record_updated"]
+  },
+  "config": {
+    "id": "wf_existing_id",
+    "name": "wf_更新后名称",
+    "trigger": {
+      "type": "lark.bitable.record.changed",
+      "config": {
+        "app_token": "app_xxx",
+        "table_id": "tbl_xxx"
+      }
+    },
+    "steps": []
+  }
+}
