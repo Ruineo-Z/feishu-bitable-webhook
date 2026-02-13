@@ -1,4 +1,4 @@
-import { WorkflowConfig, WorkflowContext, WorkflowStep, StepResult } from '../types';
+import { WorkflowConfig, WorkflowContext, WorkflowRunMode, WorkflowStep, StepResult } from '../types';
 import { ContextManager } from './context';
 import { PluginRegistry } from './registry';
 import { createFeishuLogger } from '../../logger';
@@ -244,12 +244,20 @@ export class WorkflowEngine {
   /**
    * Executes a workflow with the given trigger context.
    */
-  public async execute(workflow: WorkflowConfig, triggerContext: any): Promise<WorkflowContext> {
+  public async execute(
+    workflow: WorkflowConfig,
+    triggerContext: any,
+    options?: {
+      mode?: WorkflowRunMode;
+    },
+  ): Promise<WorkflowContext> {
     const traceId = triggerContext.traceId || `wf-${Date.now()}`;
     const log = createFeishuLogger(traceId);
     log.info(`开始执行工作流: ${workflow.name} (${workflow.id})`);
 
-    const contextManager = new ContextManager(triggerContext);
+    const contextManager = new ContextManager(triggerContext, {
+      mode: options?.mode || 'live',
+    });
     const steps = workflow.steps || [];
 
     if (steps.length === 0) {
@@ -472,8 +480,16 @@ export class WorkflowEngine {
           }
         }
 
+        contextManager.setCurrentStep(step.id, step.type);
         const startTime = Date.now();
-        let result: StepResult = await plugin.execute(contextManager.getContext(), resolvedConfig);
+        let result: StepResult;
+
+        try {
+          result = await plugin.execute(contextManager.getContext(), resolvedConfig);
+        } finally {
+          contextManager.clearCurrentStep();
+        }
+
         const duration = Date.now() - startTime;
 
         if (isActionStep(step)) {

@@ -1,6 +1,7 @@
 import { PluginRegistry } from '../core/registry'
 import { ConditionPlugin } from './condition'
 import { FeishuMessagePlugin } from './feishu-message'
+import { FeishuWebhookPlugin } from './feishu-webhook'
 import { BitableUpdatePlugin } from './bitable-update'
 import { BitableCreatePlugin } from './bitable-create'
 import { BitableDeletePlugin } from './bitable-delete'
@@ -12,6 +13,7 @@ export function registerStandardPlugins() {
   registry.register('condition', new ConditionPlugin())
 
   registry.register('action.feishu.message', new FeishuMessagePlugin())
+  registry.register('action.feishu.webhook', new FeishuWebhookPlugin())
 
   registry.register('action.bitable.create', new BitableCreatePlugin())
   registry.register('action.bitable.update', new BitableUpdatePlugin())

@@ -8,11 +8,13 @@ import { executionLogsDb } from './db/execution-logs'
 import { fieldMappingsDb } from './db/field-mappings'
 import { refreshFieldMappingsByTable } from './services/field-mappings'
 import registerWorkflowRoutes from './routes/workflow'
+import registerWorkflowAuthoringRoutes from './routes/workflow-authoring'
 import { ok, err } from './http/response'
 
 const app = new OpenAPIHono()
 
 registerWorkflowRoutes(app)
+registerWorkflowAuthoringRoutes(app)
 
 app.doc('/doc', {
   openapi: '3.0.0',

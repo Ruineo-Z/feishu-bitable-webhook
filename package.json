@@ -10,7 +10,11 @@
     "backfill:workflow-trigger-actions": "bun scripts/backfill-workflow-trigger-actions.ts",
     "test:workflow:scope-routing": "npx tsx tests/workflow/scope-routing.test.ts",
     "test:workflow:scope-migration": "npx tsx tests/workflow/scope-migration.test.ts",
-    "test:workflow:branching": "npx tsx tests/workflow/branching-engine.test.ts"
+    "test:workflow:branching": "npx tsx tests/workflow/branching-engine.test.ts",
+    "test:workflow:dry-run": "npx tsx tests/workflow/dry-run-engine.test.ts",
+    "test:workflow:webhook": "npx tsx tests/workflow/feishu-webhook-plugin.test.ts",
+    "test:workflow:authoring": "npx tsx tests/workflow/authoring-loop.test.ts",
+    "test:workflow:authoring-route": "npx tsx tests/workflow/authoring-route.test.ts"
   },
   "dependencies": {
     "@hono/swagger-ui": "^0.4.0",

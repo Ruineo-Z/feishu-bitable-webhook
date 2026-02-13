@@ -5,8 +5,21 @@ import { CodecWarning, encodeFieldValueForFilter, FieldCodecError, formatCodecWa
 import { loadFieldResolverMaps, resolveFieldMeta, resolveFieldNameList } from './field-mapping-resolver'
 import { extractFeishuErrorPayload } from './feishu-error'
 import { okStep, errStep } from './step-result'
+import { appendDryRunEffect, isDryRunContext } from './dry-run'
 
-type FilterOperator = 'is' | 'isNot' | 'contains' | 'doesNotContain' | 'isEmpty' | 'isNotEmpty' | 'isGreater' | 'isGreaterEqual' | 'isLess' | 'isLessEqual' | 'like' | 'in'
+type FilterOperator =
+  | 'is'
+  | 'isNot'
+  | 'contains'
+  | 'doesNotContain'
+  | 'isEmpty'
+  | 'isNotEmpty'
+  | 'isGreater'
+  | 'isGreaterEqual'
+  | 'isLess'
+  | 'isLessEqual'
+  | 'like'
+  | 'in'
 
 interface QueryFilter {
   conjunction?: 'and' | 'or'
@@ -47,8 +60,11 @@ export class BitableQueryPlugin implements IWorkflowPlugin {
       )
     }
 
+    const appToken = String(app_token)
+    const tableId = String(table_id)
+
     try {
-      const resolverMaps = await loadFieldResolverMaps(String(app_token), String(table_id))
+      const resolverMaps = await loadFieldResolverMaps(appToken, tableId)
       const codecWarnings: CodecWarning[] = []
 
       let resolvedFilter: QueryFilter | undefined
@@ -62,8 +78,8 @@ export class BitableQueryPlugin implements IWorkflowPlugin {
           }
 
           const encodedValue = encodeFieldValueForFilter(condition.value, {
-            appToken: String(app_token),
-            tableId: String(table_id),
+            appToken,
+            tableId,
             fieldName: resolved.fieldName,
             fieldId: resolved.fieldId,
             rawFieldType: resolved.fieldType,
@@ -140,10 +156,46 @@ export class BitableQueryPlugin implements IWorkflowPlugin {
         )
       }
 
+      const queryPayload = {
+        filter: resolvedFilter,
+        sort: resolvedSort,
+        field_names: resolvedFieldNames?.resolvedFieldNames,
+        page_size: Number(page_size),
+        page_token: page_token ? String(page_token) : undefined,
+      }
+
+      if (isDryRunContext(context)) {
+        appendDryRunEffect(context, {
+          action: 'bitable.record.query',
+          target: {
+            app_token: appToken,
+            table_id: tableId,
+          },
+          payload: queryPayload,
+        })
+
+        return okStep(
+          {
+            dryRun: true,
+            records: [],
+            total: 0,
+            hasMore: false,
+            pageToken: null,
+            preview: {
+              app_token: appToken,
+              table_id: tableId,
+              ...queryPayload,
+            },
+            warnings: formatCodecWarnings(codecWarnings),
+          },
+          Date.now() - startTime,
+        )
+      }
+
       const res = await (client as any).bitable.v1.appTableRecord.search({
         path: {
-          app_token,
-          table_id,
+          app_token: appToken,
+          table_id: tableId,
         },
         params: {
           page_size: Number(page_size),

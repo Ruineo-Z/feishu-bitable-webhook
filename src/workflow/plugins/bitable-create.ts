@@ -5,6 +5,7 @@ import { CodecWarning, encodeFieldValueForWrite, FieldCodecError, formatCodecWar
 import { loadFieldResolverMaps, resolveFieldMeta } from './field-mapping-resolver'
 import { extractFeishuErrorPayload } from './feishu-error'
 import { okStep, errStep } from './step-result'
+import { appendDryRunEffect, isDryRunContext } from './dry-run'
 
 export class BitableCreatePlugin implements IWorkflowPlugin {
   async execute(context: WorkflowContext, config: Record<string, unknown>): Promise<StepResult> {
@@ -19,8 +20,11 @@ export class BitableCreatePlugin implements IWorkflowPlugin {
       )
     }
 
+    const appToken = String(app_token)
+    const tableId = String(table_id)
+
     try {
-      const resolverMaps = await loadFieldResolverMaps(String(app_token), String(table_id))
+      const resolverMaps = await loadFieldResolverMaps(appToken, tableId)
       const sourceFields = fields as Record<string, unknown>
       const resolvedFields: Record<string, unknown> = {}
       const missingFieldIds: string[] = []
@@ -34,8 +38,8 @@ export class BitableCreatePlugin implements IWorkflowPlugin {
         }
 
         const encoded = encodeFieldValueForWrite(fieldValue, {
-          appToken: String(app_token),
-          tableId: String(table_id),
+          appToken,
+          tableId,
           fieldName: resolved.fieldName,
           fieldId: resolved.fieldId,
           rawFieldType: resolved.fieldType,
@@ -53,10 +57,36 @@ export class BitableCreatePlugin implements IWorkflowPlugin {
         )
       }
 
+      if (isDryRunContext(context)) {
+        appendDryRunEffect(context, {
+          action: 'bitable.record.create',
+          target: {
+            app_token: appToken,
+            table_id: tableId,
+          },
+          payload: {
+            fields: resolvedFields,
+          },
+        })
+
+        return okStep(
+          {
+            dryRun: true,
+            preview: {
+              app_token: appToken,
+              table_id: tableId,
+              fields: resolvedFields,
+            },
+            warnings: formatCodecWarnings(codecWarnings),
+          },
+          Date.now() - startTime,
+        )
+      }
+
       const res = await (client as any).bitable.v1.appTableRecord.create({
         path: {
-          app_token,
-          table_id,
+          app_token: appToken,
+          table_id: tableId,
         },
         params: {
           user_id_type: 'open_id',

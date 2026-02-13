@@ -14,7 +14,7 @@
 
 - 飞书多维表格 WebSocket 长连接事件监听
 - Workflow scope 路由（table + optional eventTypes）
-- Workflow 插件动作（消息发送 / 记录增删改查）
+- Workflow 插件动作（消息发送：SDK + 群机器人 webhook / 记录增删改查）
 - Workflow DSL（支持 DAG 分支：condition onTrue/onFalse + next）
 - 字段映射 registry（`field_id -> field_name`）
 - 执行日志查询
@@ -127,6 +127,12 @@ SUPABASE_KEY=your_service_role_key
 | GET | `/api/mappings?appToken=...&tableId=...` | 查询字段映射 registry |
 | POST | `/api/mappings/refresh` | 按 `appToken + tableId` 刷新字段映射 |
 
+### Workflow Agent 编排闭环
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/workflows/dry-run` | 校验候选 DSL（含 dry-run 与结构化错误），不落库发布 |
+
 ### Swagger UI
 
 启动服务后访问：`http://localhost:3333/docs`
@@ -206,6 +212,18 @@ npx tsx tests/workflow/condition.test.ts
 # Bitable 动作插件
 npx tsx tests/workflow/bitable-plugins.test.ts
 
+# dry-run 执行链路
+npx tsx tests/workflow/dry-run-engine.test.ts
+
+# Feishu webhook 消息插件
+npx tsx tests/workflow/feishu-webhook-plugin.test.ts
+
+# Agent 编排校验闭环
+npx tsx tests/workflow/authoring-loop.test.ts
+
+# Agent 编排路由接口
+npx tsx tests/workflow/authoring-route.test.ts
+
 ```
 
 
@@ -219,7 +237,8 @@ src/
 ├── services/
 │   └── field-mappings.ts    # 字段映射刷新服务
 ├── routes/
-│   └── workflow.ts          # 工作流管理接口
+│   ├── workflow.ts          # 工作流管理接口
+│   └── workflow-authoring.ts# Agent 编排校验与确认发布接口
 ├── db/
 │   ├── client.ts            # Supabase 客户端
 │   ├── field-mappings.ts    # 字段映射 registry 访问层

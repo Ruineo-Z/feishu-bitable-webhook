@@ -2,7 +2,7 @@ import * as Lark from '@larksuiteoapi/node-sdk'
 import { wsClient } from './client'
 import { ExecutionLog } from './db/execution-logs'
 import { fieldMappingsDb } from './db/field-mappings'
-import { createEventTraceId, createFeishuLogger } from './logger'
+import { createEventTraceId, createFeishuLogger, createLoggerWithTrace } from './logger'
 import { parseFeishuEvent, ParsedEvent } from './parser'
 import { getSupabase } from './db/client'
 import { WorkflowEngine } from './workflow/core/engine'
@@ -100,11 +100,43 @@ async function mapFieldsByName(
   appToken: string,
   tableId: string,
   fieldsById: Record<string, unknown>,
+  traceId = 'WF-MAP',
 ): Promise<{ mappedFields: Record<string, unknown>; missingFieldIds: string[]; warnings: ReturnType<typeof formatCodecWarnings> }> {
-  const [idToNameMap, fieldTypeMaps] = await Promise.all([
-    fieldMappingsDb.getIdToNameMap(appToken, tableId),
-    fieldMappingsDb.getFieldTypeMaps(appToken, tableId),
-  ])
+  const mapLog = createLoggerWithTrace(traceId, 'lark.ts')
+
+  let idToNameMap: Record<string, string> = {}
+  try {
+    idToNameMap = await fieldMappingsDb.getIdToNameMap(appToken, tableId)
+  } catch (error) {
+    mapLog.warn('获取字段映射失败，降级使用 field_id 作为键', {
+      appToken,
+      tableId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  let fieldTypeMaps: {
+    fieldTypeById: Record<string, string>
+    fieldTypeByName: Record<string, string>
+  } = {
+    fieldTypeById: {},
+    fieldTypeByName: {},
+  }
+
+  try {
+    const result = await fieldMappingsDb.getFieldTypeMaps(appToken, tableId)
+    fieldTypeMaps = {
+      fieldTypeById: result.fieldTypeById,
+      fieldTypeByName: result.fieldTypeByName,
+    }
+  } catch (error) {
+    mapLog.warn('获取字段类型失败，降级 unknown', {
+      appToken,
+      tableId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+
   const mappedFields: Record<string, unknown> = {}
   const missingFieldIds: string[] = []
   const codecWarnings = []
@@ -290,8 +322,8 @@ async function processEvent(rawEvent: unknown, version: string) {
 
   let shouldMarkProcessed = false
   try {
-    const mappedAfter = await mapFieldsByName(appToken, tableId, fields)
-    const mappedBefore = await mapFieldsByName(appToken, tableId, beforeFields)
+    const mappedAfter = await mapFieldsByName(appToken, tableId, fields, traceId)
+    const mappedBefore = await mapFieldsByName(appToken, tableId, beforeFields, traceId)
 
     log.debug('关键字段快照', {
       eventId,
@@ -416,7 +448,14 @@ async function processEvent(rawEvent: unknown, version: string) {
       })
     }
   } catch (error) {
-    log.error('工作流引擎处理异常:', error)
+    log.error('工作流引擎处理异常', {
+      eventId,
+      eventType,
+      appToken,
+      tableId,
+      recordId,
+      error,
+    })
   } finally {
     if (eventId) {
       processingEvents.delete(eventId)

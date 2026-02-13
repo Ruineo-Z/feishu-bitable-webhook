@@ -38,10 +38,29 @@ export interface WorkflowStep {
   onFalse?: string;
 }
 
+export type WorkflowRunMode = 'live' | 'dry-run';
+
+export interface DryRunEffect {
+  stepId: string;
+  stepType: string;
+  action: string;
+  target?: Record<string, unknown>;
+  payload?: unknown;
+}
+
+export interface WorkflowRuntimeMeta {
+  mode: WorkflowRunMode;
+  currentStepId?: string;
+  currentStepType?: string;
+  dryRun: {
+    effects: DryRunEffect[];
+  };
+}
+
 export interface WorkflowContext {
   trigger: any;
   steps: Record<string, StepResult>;
-  // Global variables or helpers can be added here
+  runtime: WorkflowRuntimeMeta;
 }
 
 export interface StepResult {

@@ -5,8 +5,21 @@ import { CodecWarning, encodeFieldValueForFilter, FieldCodecError, formatCodecWa
 import { loadFieldResolverMaps, resolveFieldMeta } from './field-mapping-resolver'
 import { extractFeishuErrorPayload } from './feishu-error'
 import { okStep, errStep } from './step-result'
+import { appendDryRunEffect, isDryRunContext } from './dry-run'
 
-type FilterOperator = 'is' | 'isNot' | 'contains' | 'doesNotContain' | 'isEmpty' | 'isNotEmpty' | 'isGreater' | 'isGreaterEqual' | 'isLess' | 'isLessEqual' | 'like' | 'in'
+type FilterOperator =
+  | 'is'
+  | 'isNot'
+  | 'contains'
+  | 'doesNotContain'
+  | 'isEmpty'
+  | 'isNotEmpty'
+  | 'isGreater'
+  | 'isGreaterEqual'
+  | 'isLess'
+  | 'isLessEqual'
+  | 'like'
+  | 'in'
 
 interface SearchFilter {
   conjunction: 'and' | 'or'
@@ -33,8 +46,11 @@ export class BitableDeletePlugin implements IWorkflowPlugin {
       )
     }
 
+    const appToken = String(app_token)
+    const tableId = String(table_id)
+
     try {
-      const resolverMaps = await loadFieldResolverMaps(String(app_token), String(table_id))
+      const resolverMaps = await loadFieldResolverMaps(appToken, tableId)
       let targetRecordId = record_id ? String(record_id) : ''
       const codecWarnings: CodecWarning[] = []
 
@@ -56,8 +72,8 @@ export class BitableDeletePlugin implements IWorkflowPlugin {
           }
 
           const encodedValue = encodeFieldValueForFilter(condition.value, {
-            appToken: String(app_token),
-            tableId: String(table_id),
+            appToken,
+            tableId,
             fieldName: resolved.fieldName,
             fieldId: resolved.fieldId,
             rawFieldType: resolved.fieldType,
@@ -102,16 +118,45 @@ export class BitableDeletePlugin implements IWorkflowPlugin {
           conditions: resolvedConditions,
         }
 
+        if (isDryRunContext(context)) {
+          appendDryRunEffect(context, {
+            action: 'bitable.record.delete',
+            target: {
+              app_token: appToken,
+              table_id: tableId,
+            },
+            payload: {
+              record_id: null,
+              filter: resolvedFilterForDebug,
+            },
+          })
+
+          return okStep(
+            {
+              dryRun: true,
+              deleted: false,
+              reason: 'dry_run_preview',
+              preview: {
+                app_token: appToken,
+                table_id: tableId,
+                filter: resolvedFilterForDebug,
+              },
+              warnings: formatCodecWarnings(codecWarnings),
+            },
+            Date.now() - startTime,
+          )
+        }
+
         const searchRes = await (client as any).bitable.v1.appTableRecord.search({
           path: {
-            app_token,
-            table_id,
+            app_token: appToken,
+            table_id: tableId,
           },
           params: {
             page_size: 1,
             user_id_type: 'open_id',
           },
-        data: {
+          data: {
             filter: resolvedFilterForDebug,
           },
         })
@@ -145,10 +190,41 @@ export class BitableDeletePlugin implements IWorkflowPlugin {
         targetRecordId = String(items[0].record_id)
       }
 
+      if (isDryRunContext(context)) {
+        appendDryRunEffect(context, {
+          action: 'bitable.record.delete',
+          target: {
+            app_token: appToken,
+            table_id: tableId,
+            record_id: targetRecordId,
+          },
+          payload: {
+            filter: resolvedFilterForDebug,
+          },
+        })
+
+        return okStep(
+          {
+            dryRun: true,
+            deleted: false,
+            reason: 'dry_run_preview',
+            recordId: targetRecordId,
+            preview: {
+              app_token: appToken,
+              table_id: tableId,
+              record_id: targetRecordId,
+              filter: resolvedFilterForDebug,
+            },
+            warnings: formatCodecWarnings(codecWarnings),
+          },
+          Date.now() - startTime,
+        )
+      }
+
       const res = await (client as any).bitable.v1.appTableRecord.delete({
         path: {
-          app_token,
-          table_id,
+          app_token: appToken,
+          table_id: tableId,
           record_id: targetRecordId,
         },
       })

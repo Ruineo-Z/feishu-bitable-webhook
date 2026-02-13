@@ -20,12 +20,78 @@ function getCallerLocation(): string {
   return 'unknown:0'
 }
 
+function serializeUnknown(value: unknown, seen: WeakSet<object> = new WeakSet<object>()): unknown {
+  if (value === null || value === undefined) {
+    return value
+  }
+
+  if (typeof value === 'bigint') {
+    return String(value)
+  }
+
+  if (value instanceof Error) {
+    const errorLike: Record<string, unknown> = {
+      name: value.name,
+      message: value.message,
+    }
+
+    if (value.stack) {
+      errorLike.stack = value.stack
+    }
+
+    for (const key of Object.getOwnPropertyNames(value)) {
+      if (key === 'name' || key === 'message' || key === 'stack') {
+        continue
+      }
+
+      const raw = (value as unknown as Record<string, unknown>)[key]
+      errorLike[key] = serializeUnknown(raw, seen)
+    }
+
+    return errorLike
+  }
+
+  if (typeof value === 'object') {
+    if (seen.has(value as object)) {
+      return '[Circular]'
+    }
+
+    seen.add(value as object)
+
+    if (Array.isArray(value)) {
+      return value.map((item) => serializeUnknown(item, seen))
+    }
+
+    const output: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      output[key] = serializeUnknown(item, seen)
+    }
+
+    return output
+  }
+
+  return value
+}
+
+function stringifyUnknown(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value === undefined) return 'undefined'
+
+  if (typeof value === 'object' || typeof value === 'bigint') {
+    try {
+      const serialized = serializeUnknown(value)
+      const text = JSON.stringify(serialized, null, 2)
+      if (text !== undefined) return text
+    } catch {
+      return String(value)
+    }
+  }
+
+  return String(value)
+}
+
 function formatMessage(args: unknown[]): string {
-  return args.map(a => {
-    if (typeof a === 'string') return a
-    if (typeof a === 'object') return JSON.stringify(a, null, 2)
-    return String(a)
-  }).join(' ')
+  return args.map((item) => stringifyUnknown(item)).join(' ')
 }
 
 function formatLog(level: string, colorFn: (s: string) => string, args: unknown[], traceId?: string, caller?: string) {
@@ -52,7 +118,7 @@ function createLogger(baseTraceId?: string): LoggerInterface {
     warn: (...args) => formatLog('WARN', colors.yellow, args, baseTraceId),
     debug: (...args) => formatLog('DEBUG', colors.gray, args, baseTraceId),
     withTrace: (traceId: string) => createLogger(traceId),
-    at: (caller: string) => createLoggerWithCaller(baseTraceId, caller)
+    at: (caller: string) => createLoggerWithCaller(baseTraceId, caller),
   }
   return l
 }
@@ -65,7 +131,7 @@ function createLoggerWithCaller(baseTraceId: string | undefined, caller: string)
     warn: (...args) => formatLog('WARN', colors.yellow, args, baseTraceId, caller),
     debug: (...args) => formatLog('DEBUG', colors.gray, args, baseTraceId, caller),
     withTrace: (traceId: string) => createLoggerWithCaller(traceId, caller),
-    at: (newCaller: string) => createLoggerWithCaller(baseTraceId, newCaller)
+    at: (newCaller: string) => createLoggerWithCaller(baseTraceId, newCaller),
   }
 }
 
