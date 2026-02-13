@@ -37,3 +37,6 @@ src/ui/workflows/style-lab*
 web/workflow-studio/*.tsbuildinfo
 web/workflow-studio/vite.config.js
 web/workflow-studio/vite.config.d.ts
+
+# Ignore local heavy UI skill assets
+.codex/skills/ui-ux-pro-max/
