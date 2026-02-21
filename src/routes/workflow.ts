@@ -240,6 +240,75 @@ const WorkflowCreateExamples = {
       },
     },
   },
+  typeAwareConditionAndFilterOperators: {
+    summary: '类型感知 condition 与 filter 操作符对照',
+    value: {
+      name: '条件与筛选操作符对照示例',
+      scope: {
+        type: 'table',
+        appToken: 'app_token_demo',
+        tableId: 'tbl_demo',
+        eventTypes: ['record_updated'],
+      },
+      isActive: true,
+      config: {
+        id: 'wf_condition_filter_operator_demo_001',
+        name: '条件与筛选操作符对照示例',
+        trigger: {
+          type: 'lark.bitable.record.changed',
+          config: {
+            app_token: 'app_token_demo',
+            table_id: 'tbl_demo',
+            actions: ['record_updated'],
+          },
+        },
+        steps: [
+          {
+            id: 'condition_gate',
+            type: 'condition',
+            name: 'condition 操作符（类型感知）',
+            config: {
+              logic: 'AND',
+              expressions: [
+                { field: '粉丝数', operator: '>=', value: 1000, source: 'after' },
+                { field: '第一负责人', operator: 'contains', value: { id: 'ou_xxx' }, source: 'after' },
+                { field: '标签', operator: 'contains', value: '重点客户', source: 'after' },
+                { field: '备注', operator: 'not_exists', source: 'after' },
+              ],
+            },
+            onTrue: 'query_target',
+            onFalse: 'end',
+          },
+          {
+            id: 'query_target',
+            type: 'action.bitable.query',
+            name: 'filter 操作符（飞书筛选语义）',
+            config: {
+              app_token: 'app_token_demo',
+              table_id: 'tbl_target',
+              filter: {
+                conjunction: 'and',
+                conditions: [
+                  { field_name: '标签', operator: 'contains', value: '重点客户' },
+                  { field_name: '处理人', operator: 'isNotEmpty' },
+                  { field_name: '创建时间', operator: 'isLess', value: '2026-01-01' },
+                ],
+              },
+            },
+            next: 'end',
+          },
+          {
+            id: 'end',
+            type: 'condition',
+            config: {
+              logic: 'AND',
+              expressions: [{ field: '标题', operator: 'exists', source: 'after' }],
+            },
+          },
+        ],
+      },
+    },
+  },
   codecAwareBitableAction: {
     summary: 'codec 感知字段值示例（文本/人员自动转换）',
     value: {
@@ -500,7 +569,10 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
       summary: '创建工作流',
       description:
         '根据请求体中的名称、Workflow DSL（支持 DAG 分支）配置与 table 作用域创建新工作流。支持可选 eventTypes 过滤。' +
-        'workflow DSL 支持 condition.expressions[].source（before/after）、step.when 守卫与 templatePolicy（fail/skip）。' +
+        'condition 使用工作流条件操作符（如 equals/contains/>=/changed），支持 condition.expressions[].source（before/after，默认 after），其中 changed 固定比较 before/after 两个快照。' +
+        'action.bitable.query/delete.filter 使用飞书筛选操作符（如 is/isNot/isEmpty/isLess），与 condition 不是同一套命名。' +
+        '字段类型元信息缺失时，condition 会回退文本处理器继续执行，并在执行输出中记录 type_fallbacks 诊断。' +
+        'workflow DSL 还支持 step.when 守卫与 templatePolicy（fail/skip）。' +
         'workflow 运行时会按目标字段类型自动进行值转换：文本字段支持富文本模板转字符串，人员字段支持 open_id 或 [{id}] 结构。',
       request: {
         body: {
@@ -581,7 +653,10 @@ export default function registerWorkflowRoutes(app: OpenAPIHono) {
       summary: '更新工作流',
       description:
         '根据工作流 ID 更新名称、配置、作用域或启用状态。更新时会保证 scope、trigger.config 与 trigger_actions 一致。' +
-        'workflow DSL 支持 condition.expressions[].source（before/after）、step.when 守卫与 templatePolicy（fail/skip）。' +
+        'condition 使用工作流条件操作符（如 equals/contains/>=/changed），支持 condition.expressions[].source（before/after，默认 after），其中 changed 固定比较 before/after 两个快照。' +
+        'action.bitable.query/delete.filter 使用飞书筛选操作符（如 is/isNot/isEmpty/isLess），与 condition 不是同一套命名。' +
+        '字段类型元信息缺失时，condition 会回退文本处理器继续执行，并在执行输出中记录 type_fallbacks 诊断。' +
+        'workflow DSL 还支持 step.when 守卫与 templatePolicy（fail/skip）。' +
         'workflow 运行时会按目标字段类型自动进行值转换，并在错误时返回字段级诊断信息。',
       request: {
         params: WorkflowIdParamSchema,

@@ -238,6 +238,87 @@ test('should use multiSelect handler for multiSelect field type', () => {
   expect(ConditionEvaluator.evaluate(condition, context)).toBe(true)
 })
 
+test('should resolve snake_case multi_select type and support in operator', () => {
+  const condition = ConditionEvaluator.parse(JSON.stringify({
+    logic: 'AND',
+    expressions: [{ field: 'tags', operator: 'in', value: 'urgent' }]
+  }))
+  const context = {
+    ...baseContext,
+    fields: { tags: ['bug', 'urgent', 'high-priority'] },
+    fieldTypes: { tags: 'multi_select' }
+  }
+  expect(ConditionEvaluator.evaluate(condition, context)).toBe(true)
+})
+
+test('should resolve numeric type code 11 as user handler', () => {
+  const condition = ConditionEvaluator.parse(JSON.stringify({
+    logic: 'AND',
+    expressions: [{ field: 'owner', operator: 'contains', value: 'ou_1' }]
+  }))
+  const context = {
+    ...baseContext,
+    fields: { owner: [{ id: 'ou_1' }] },
+    fieldTypes: { owner: '11' }
+  }
+  expect(ConditionEvaluator.evaluate(condition, context)).toBe(true)
+})
+
+test('should resolve numeric type code 5 as date handler with between operator', () => {
+  const condition = ConditionEvaluator.parse(JSON.stringify({
+    logic: 'AND',
+    expressions: [{ field: 'due_at', operator: 'between', value: ['2024-01-01', '2024-12-31'] }]
+  }))
+  const context = {
+    ...baseContext,
+    fields: { due_at: '2024-06-15' },
+    fieldTypes: { due_at: '5' }
+  }
+  expect(ConditionEvaluator.evaluate(condition, context)).toBe(true)
+})
+
+test('changed should compare before/after snapshots even when source=after', () => {
+  const condition = ConditionEvaluator.parse(JSON.stringify({
+    logic: 'AND',
+    expressions: [{ field: 'owner', operator: 'changed', source: 'after' }]
+  }))
+  const context = {
+    ...baseContext,
+    fields: { owner: [{ id: 'ou_new' }] },
+    beforeFields: { owner: [{ id: 'ou_old' }] },
+    fieldTypes: { owner: '11' }
+  }
+  expect(ConditionEvaluator.evaluate(condition, context)).toBe(true)
+})
+
+test('changed should compare before/after snapshots even when source=before', () => {
+  const condition = ConditionEvaluator.parse(JSON.stringify({
+    logic: 'AND',
+    expressions: [{ field: 'owner', operator: 'changed', source: 'before' }]
+  }))
+  const context = {
+    ...baseContext,
+    fields: { owner: [{ id: 'ou_new' }] },
+    beforeFields: { owner: [{ id: 'ou_old' }] },
+    fieldTypes: { owner: '11' }
+  }
+  expect(ConditionEvaluator.evaluate(condition, context)).toBe(true)
+})
+
+test('changed should support nested field path', () => {
+  const condition = ConditionEvaluator.parse(JSON.stringify({
+    logic: 'AND',
+    expressions: [{ field: 'profile.score', operator: 'changed', source: 'after' }]
+  }))
+  const context = {
+    ...baseContext,
+    fields: { profile: { score: 88 } },
+    beforeFields: { profile: { score: 70 } },
+    fieldTypes: { profile: 'text' }
+  }
+  expect(ConditionEvaluator.evaluate(condition, context)).toBe(true)
+})
+
 test('should fall back to text handler for unknown field type', () => {
   const condition = ConditionEvaluator.parse(JSON.stringify({
     logic: 'AND',
@@ -249,6 +330,38 @@ test('should fall back to text handler for unknown field type', () => {
     fieldTypes: { unknownField: 'unknown_type' }
   }
   expect(ConditionEvaluator.evaluate(condition, context)).toBe(true)
+})
+
+test('should collect fallback diagnostics when field type missing', () => {
+  const condition = ConditionEvaluator.parse(JSON.stringify({
+    logic: 'AND',
+    expressions: [{ field: 'missingTypedField', operator: 'contains', value: 'x' }]
+  }))
+  const context = {
+    ...baseContext,
+    fields: { missingTypedField: 'xxx' },
+    fieldTypes: {}
+  }
+  const diagnostics = ConditionEvaluator.collectFieldTypeFallbacks(condition, context)
+  expect(Array.isArray(diagnostics)).toBe(true)
+  expect(diagnostics.length > 0).toBe(true)
+  expect((diagnostics[0] as any).reason).toBe('field_type_missing')
+})
+
+test('should collect fallback diagnostics when field type unrecognized', () => {
+  const condition = ConditionEvaluator.parse(JSON.stringify({
+    logic: 'AND',
+    expressions: [{ field: 'owner', operator: 'contains', value: 'ou_1' }]
+  }))
+  const context = {
+    ...baseContext,
+    fields: { owner: [{ id: 'ou_1' }] },
+    fieldTypes: { owner: 'unsupported_type' }
+  }
+  const diagnostics = ConditionEvaluator.collectFieldTypeFallbacks(condition, context)
+  expect(Array.isArray(diagnostics)).toBe(true)
+  expect(diagnostics.length > 0).toBe(true)
+  expect((diagnostics[0] as any).reason).toBe('field_type_unrecognized')
 })
 
 // ==================== Original ConditionEvaluator Tests ====================

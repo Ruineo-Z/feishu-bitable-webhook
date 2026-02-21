@@ -63,6 +63,88 @@ HTTP 请求
   -> upsert/remove bitable_field_mappings
 ```
 
+### 事件解析层：字段类型支持与变更判断
+
+#### 1) 入站事件与字段快照
+
+- 已接入事件：
+  - `drive.file.bitable_record_changed_v1`
+  - `drive.file.bitable_record_changed_v2`
+  - `drive.file.bitable_field_changed_v1`（用于维护字段映射）
+- 对记录变更事件，统一抽取：
+  - `fields`（after）
+  - `beforeFields`（before）
+- 人员字段会优先从 `field_identity_value.users` 归一为 `[{ id: "ou_xxx" }]`。
+
+#### 2) 已实现字段类型（Codec）
+
+当前已支持以下规范类型（decode / write / filter）：
+
+- `text`
+- `number`
+- `single_select`
+- `multi_select`
+- `date`
+- `checkbox`
+- `user`
+- `url`
+- `attachment`
+- `link`
+- `location`
+- `group`
+- `formula`
+- `unknown`（降级透传 + warning）
+
+其中你关注的几类已覆盖：**人员、数字、文本、多选**。
+
+#### 3) 每种字段类型可用判断（`condition` 节点）
+
+> `condition` 节点使用的是工作流条件引擎操作符（如 `equals`、`not_exists`、`<`）。
+
+| 字段类型 | 已实现判断 |
+|---|---|
+| `text` | `equals` / `not_equals` / `contains` / `not_contains` / `exists` / `not_exists` |
+| `number` | `equals` / `not_equals` / `>` / `<` / `>=` / `<=` / `exists` / `not_exists` |
+| `singleSelect` | `equals` / `not_equals` / `exists` / `not_exists` |
+| `multiSelect` | `contains` / `not_contains` / `exists` / `not_exists` / `in` |
+| `user` | `contains` / `not_contains` / `exists` / `not_exists` / `in` |
+| `date` | `equals` / `not_equals` / `>` / `<` / `>=` / `<=` / `exists` / `not_exists` / `between` |
+| `checkbox` | `equals` / `not_equals` |
+| `link` | `contains` / `not_contains` / `exists` / `not_exists` / `in` |
+
+补充：
+
+- `changed` 为全局操作符，可用于 before/after 变更判断。
+- `source: "before"` / `source: "after"` 可指定比较来源（默认 `after`）。
+- `changed` 的实现为：`fields[field]`（after）与 `beforeFields[field]` 做 JSON 序列化比较（支持嵌套路径，不依赖 `source`）。
+
+#### 4) 每种字段类型可用判断（`action.bitable.query/delete` 的 `filter`）
+
+> `query/delete` 走飞书筛选操作符（如 `isEmpty`、`isLess`），与 `condition` 节点不是同一套命名。
+
+| 字段类型（Codec） | 已实现筛选操作符 |
+|---|---|
+| `text` | `is` / `isNot` / `contains` / `doesNotContain` / `isEmpty` / `isNotEmpty` |
+| `number` | `is` / `isNot` / `isGreater` / `isGreaterEqual` / `isLess` / `isLessEqual` / `isEmpty` / `isNotEmpty` |
+| `single_select` | `is` / `isNot` / `contains` / `doesNotContain` / `isEmpty` / `isNotEmpty` |
+| `multi_select` | `is` / `isNot` / `contains` / `doesNotContain` / `isEmpty` / `isNotEmpty` |
+| `date` | `is` / `isGreater` / `isLess` / `isEmpty` / `isNotEmpty` |
+| `checkbox` | `is` |
+| `user` | `is` / `isNot` / `contains` / `doesNotContain` / `isEmpty` / `isNotEmpty` |
+| `url` | `is` / `isNot` / `contains` / `doesNotContain` / `isEmpty` / `isNotEmpty` |
+| `attachment` | `isEmpty` / `isNotEmpty` |
+| `link` | `is` / `isNot` / `contains` / `doesNotContain` / `isEmpty` / `isNotEmpty` |
+| `location` | `is` / `isNot` / `contains` / `doesNotContain` / `isEmpty` / `isNotEmpty` |
+| `group` | `is` / `isNot` / `contains` / `doesNotContain` / `isEmpty` / `isNotEmpty` |
+| `formula` | 不支持作为筛选条件 |
+
+#### 5) 当前边界（重要）
+
+- 条件引擎运行时已注入 `fieldTypes`（支持字段名/字段 ID 映射），可识别类型会优先命中对应类型处理器。
+- 字段类型缺失或未识别时，条件评估会回退文本处理器继续执行，并输出 `type_fallbacks` 诊断信息用于排查。
+- 过滤编码中 `like` / `in` 目前明确不支持。
+- `formula` / `lookup` 字段不支持作为筛选条件。
+
 ### 启动时序（`bun run dev`）
 
 1. `bun --watch start-local.mjs` 启动开发模式。  

@@ -4,7 +4,7 @@
 TBD - created by archiving change migrate-to-workflow-only-with-field-mapping. Update Purpose after archive.
 ## Requirements
 ### Requirement: Event processing SHALL execute through workflow-only runtime
-The system SHALL process Feishu record-change events exclusively through workflow scope routing and workflow engine execution.
+The system SHALL process Feishu record-change events exclusively through workflow scope routing and workflow engine execution, and MUST provide field type metadata for condition evaluation in the same runtime path.
 
 #### Scenario: Route event to workflow candidates
 - **WHEN** a record change event is received with `app_token` and `table_id`
@@ -13,6 +13,10 @@ The system SHALL process Feishu record-change events exclusively through workflo
 #### Scenario: Do not execute legacy rules in realtime path
 - **WHEN** a record change event is handled by the runtime
 - **THEN** the system MUST NOT invoke legacy rules matching/execution in the realtime event path
+
+#### Scenario: Build type-aware condition evaluation context
+- **WHEN** runtime prepares condition evaluation context for a workflow triggered by record change
+- **THEN** it MUST include field type mapping derived from table field schema so condition expressions can use type-aware handlers
 
 ### Requirement: Workflow runtime SHALL preserve table-scope matching semantics
 The system SHALL preserve table-scope candidate filtering semantics for active workflows.
@@ -46,4 +50,3 @@ The system SHALL emit execution outcomes and error context for workflow-only run
 #### Scenario: Keep processing boundary clear
 - **WHEN** one workflow execution fails for an event
 - **THEN** the runtime MUST NOT silently suppress the failure and MUST keep failure visibility for operators
-

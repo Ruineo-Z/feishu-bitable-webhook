@@ -2,7 +2,8 @@ import { WorkflowConfig, WorkflowContext, WorkflowRunMode, WorkflowStep, StepRes
 import { ContextManager } from './context';
 import { PluginRegistry } from './registry';
 import { createFeishuLogger } from '../../logger';
-import { Condition, ConditionEvaluator, ConditionEvaluatedSource, EvaluationContext } from '../../engine/condition-evaluator';
+import { Condition, ConditionEvaluator, ConditionEvaluatedSource } from '../../engine/condition-evaluator';
+import { buildConditionEvaluationContext } from '../condition-context';
 
 interface StepTransitionDecision {
   nextStepId: string | null;
@@ -55,34 +56,23 @@ function isConditionConfig(value: unknown): value is Condition {
   );
 }
 
-function buildEvaluationContext(context: WorkflowContext): EvaluationContext {
-  const trigger = context.trigger || {};
-  const record = trigger.record || {};
-
-  return {
-    fields: (record.fields || {}) as Record<string, unknown>,
-    beforeFields: (record.beforeFields || {}) as Record<string, unknown>,
-    recordId: trigger.record_id || '',
-    action: trigger.action_list?.[0]?.action || 'unknown',
-    operatorOpenId: trigger.operator_id?.open_id,
-    fieldTypes: {},
-  };
-}
-
 function evaluateConditionConfig(
   condition: Condition,
   context: WorkflowContext,
 ): {
   pass: boolean;
   evaluatedSource: ConditionEvaluatedSource;
+  typeFallbacks: ReturnType<typeof ConditionEvaluator.collectFieldTypeFallbacks>;
 } {
-  const evaluationContext = buildEvaluationContext(context);
+  const evaluationContext = buildConditionEvaluationContext(context);
   const pass = ConditionEvaluator.evaluate(condition, evaluationContext);
   const evaluatedSource = ConditionEvaluator.resolveEvaluatedSource(condition);
+  const typeFallbacks = ConditionEvaluator.collectFieldTypeFallbacks(condition, evaluationContext);
 
   return {
     pass,
     evaluatedSource,
+    typeFallbacks,
   };
 }
 
@@ -344,6 +334,13 @@ export class WorkflowEngine {
           }
 
           const guardResult = evaluateConditionConfig(step.when, contextManager.getContext());
+          if (guardResult.typeFallbacks.length > 0) {
+            log.warn(`步骤 ${step.id} 的 when 条件存在字段类型回退`, {
+              stepId: step.id,
+              fallbackCount: guardResult.typeFallbacks.length,
+              fallbacks: guardResult.typeFallbacks,
+            });
+          }
           if (!guardResult.pass) {
             const skipTransition = decideNextStep(
               steps,

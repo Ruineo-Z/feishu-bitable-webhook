@@ -104,7 +104,14 @@ async function mapFieldsByName(
   tableId: string,
   fieldsById: Record<string, unknown>,
   traceId = 'WF-MAP',
-): Promise<{ mappedFields: Record<string, unknown>; missingFieldIds: string[]; warnings: ReturnType<typeof formatCodecWarnings> }> {
+): Promise<{
+  mappedFields: Record<string, unknown>
+  missingFieldIds: string[]
+  warnings: ReturnType<typeof formatCodecWarnings>
+  fieldTypesById: Record<string, string>
+  fieldTypesByName: Record<string, string>
+  idToNameMap: Record<string, string>
+}> {
   const mapLog = createLoggerWithTrace(traceId, 'lark.ts')
 
   let idToNameMap: Record<string, string> = {}
@@ -163,7 +170,26 @@ async function mapFieldsByName(
     missingFieldIds.push(fieldId)
   }
 
-  return { mappedFields, missingFieldIds, warnings: formatCodecWarnings(codecWarnings) }
+  const fieldTypesByName = {
+    ...fieldTypeMaps.fieldTypeByName,
+  }
+  for (const [fieldId, fieldName] of Object.entries(idToNameMap)) {
+    const typeById = fieldTypeMaps.fieldTypeById[fieldId]
+    if (typeById && !fieldTypesByName[fieldName]) {
+      fieldTypesByName[fieldName] = typeById
+    }
+  }
+
+  return {
+    mappedFields,
+    missingFieldIds,
+    warnings: formatCodecWarnings(codecWarnings),
+    fieldTypesById: {
+      ...fieldTypeMaps.fieldTypeById,
+    },
+    fieldTypesByName,
+    idToNameMap,
+  }
 }
 
 function summarizeWorkflowResult(steps: Record<string, { success: boolean; error?: string; output?: unknown }>) {
@@ -490,6 +516,18 @@ async function processEvent(rawEvent: unknown, version: string) {
     const mappedAfter = await mapFieldsByName(appToken, tableId, fields, traceId)
     const mappedBefore = await mapFieldsByName(appToken, tableId, beforeFields, traceId)
     const userNameIndex = buildUserNameIndexFromRawEvent(rawEvent)
+    const fieldTypesById = {
+      ...mappedBefore.fieldTypesById,
+      ...mappedAfter.fieldTypesById,
+    }
+    const fieldTypesByName = {
+      ...mappedBefore.fieldTypesByName,
+      ...mappedAfter.fieldTypesByName,
+    }
+    const fieldIdToName = {
+      ...mappedBefore.idToNameMap,
+      ...mappedAfter.idToNameMap,
+    }
 
     const ownerBefore = pickDiagnosticsField(mappedBefore.mappedFields, OWNER_FIELD_ALIASES)
     const ownerAfter = pickDiagnosticsField(mappedAfter.mappedFields, OWNER_FIELD_ALIASES)
@@ -575,6 +613,13 @@ async function processEvent(rawEvent: unknown, version: string) {
                 fields_by_id: fields,
                 beforeFields: mappedBefore.mappedFields,
                 before_fields_by_id: beforeFields,
+                fieldTypes: fieldTypesByName,
+                fieldTypesByName: fieldTypesByName,
+                field_types_by_name: fieldTypesByName,
+                fieldTypesById: fieldTypesById,
+                field_types_by_id: fieldTypesById,
+                fieldIdToName: fieldIdToName,
+                field_id_to_name: fieldIdToName,
               },
               action_list: [{ action: triggerAction }],
               operator_id: operatorOpenId ? { open_id: operatorOpenId } : undefined,

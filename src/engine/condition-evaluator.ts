@@ -1,3 +1,5 @@
+import { normalizeFieldType } from '../workflow/codec/registry'
+
 export interface ConditionExpression {
   field: string
   operator: string
@@ -11,6 +13,14 @@ export interface Condition {
 }
 
 export type ConditionEvaluatedSource = 'before' | 'after' | 'mixed' | 'none'
+
+export interface ConditionTypeFallbackDiagnostic {
+  field: string
+  source: 'before' | 'after'
+  rawFieldType?: string
+  resolvedHandlerType: string
+  reason: 'field_type_missing' | 'field_type_unrecognized'
+}
 
 /**
  * 字段类型处理器接口
@@ -246,6 +256,17 @@ export const FIELD_TYPE_HANDLERS: Record<string, FieldTypeHandler> = {
   link: linkHandler,
 }
 
+const NORMALIZED_TYPE_TO_HANDLER_KEY: Partial<Record<ReturnType<typeof normalizeFieldType>, keyof typeof FIELD_TYPE_HANDLERS>> = {
+  text: 'text',
+  number: 'number',
+  single_select: 'singleSelect',
+  multi_select: 'multiSelect',
+  date: 'date',
+  checkbox: 'checkbox',
+  user: 'user',
+  link: 'link',
+}
+
 /**
  * 扩展的评估上下文
  */
@@ -262,8 +283,47 @@ export interface EvaluationContext {
 /**
  * 获取字段类型的辅助函数
  */
-function getFieldType(fieldId: string, context: EvaluationContext): string {
-  return context.fieldTypes?.[fieldId] || 'text'
+interface FieldTypeResolutionResult {
+  rawFieldType?: string
+  resolvedHandlerType: string
+  fallbackReason?: ConditionTypeFallbackDiagnostic['reason']
+}
+
+function resolveFieldType(fieldPath: string, context: EvaluationContext): FieldTypeResolutionResult {
+  const fieldRoot = fieldPath.split('.')[0]
+  const rawType = context.fieldTypes?.[fieldPath] || context.fieldTypes?.[fieldRoot]
+  if (!rawType) {
+    return {
+      resolvedHandlerType: 'text',
+      fallbackReason: 'field_type_missing',
+    }
+  }
+
+  if (FIELD_TYPE_HANDLERS[rawType]) {
+    return {
+      rawFieldType: rawType,
+      resolvedHandlerType: rawType,
+    }
+  }
+
+  const normalized = normalizeFieldType(rawType)
+  const handlerKey = NORMALIZED_TYPE_TO_HANDLER_KEY[normalized]
+  if (handlerKey && FIELD_TYPE_HANDLERS[handlerKey]) {
+    return {
+      rawFieldType: rawType,
+      resolvedHandlerType: handlerKey,
+    }
+  }
+
+  return {
+    rawFieldType: rawType,
+    resolvedHandlerType: 'text',
+    fallbackReason: 'field_type_unrecognized',
+  }
+}
+
+function getFieldType(fieldPath: string, context: EvaluationContext): string {
+  return resolveFieldType(fieldPath, context).resolvedHandlerType
 }
 
 export class ConditionEvaluator {
@@ -278,11 +338,39 @@ export class ConditionEvaluator {
     '<=': (a, b) => Number(a) <= Number(b),
     exists: (a) => a !== null && a !== undefined && a !== '',
     not_exists: (a) => a === null || a === undefined || a === '',
-    changed: (a, b, beforeFields) => {
-      if (!beforeFields || typeof beforeFields !== 'object') return true
-      const beforeValue = (beforeFields as Record<string, unknown>)[b as string]
-      return JSON.stringify(a) !== JSON.stringify(beforeValue)
-    },
+  }
+
+  private static hasChangedBetweenSnapshots(fieldPath: string, context: EvaluationContext): boolean {
+    const afterValue = this.getNestedValue(context.fields || {}, fieldPath)
+    const beforeValue = this.getNestedValue(context.beforeFields || {}, fieldPath)
+    return JSON.stringify(afterValue) !== JSON.stringify(beforeValue)
+  }
+
+  static collectFieldTypeFallbacks(
+    condition: Condition | undefined,
+    context: EvaluationContext,
+  ): ConditionTypeFallbackDiagnostic[] {
+    if (!condition || !Array.isArray(condition.expressions) || condition.expressions.length === 0) {
+      return []
+    }
+
+    const diagnostics: ConditionTypeFallbackDiagnostic[] = []
+    for (const expr of condition.expressions) {
+      const resolution = resolveFieldType(expr.field, context)
+      if (!resolution.fallbackReason) {
+        continue
+      }
+
+      diagnostics.push({
+        field: expr.field,
+        source: expr.source === 'before' ? 'before' : 'after',
+        rawFieldType: resolution.rawFieldType,
+        resolvedHandlerType: resolution.resolvedHandlerType,
+        reason: resolution.fallbackReason,
+      })
+    }
+
+    return diagnostics
   }
 
   static evaluate(condition: Condition | undefined, context: EvaluationContext): boolean {
@@ -314,6 +402,11 @@ export class ConditionEvaluator {
       return results[expr.operator] ?? false
     }
 
+    // changed 需要 beforeFields
+    if (expr.operator === 'changed') {
+      return this.hasChangedBetweenSnapshots(expr.field, context)
+    }
+
     // 否则回退到原有的通用运算符
     const operatorFn = this.operators[expr.operator]
     if (!operatorFn) {
@@ -325,11 +418,6 @@ export class ConditionEvaluator {
     // exists / not_exists 不需要比较值
     if (expr.operator === 'exists' || expr.operator === 'not_exists') {
       return operatorFn(fieldValue)
-    }
-
-    // changed 需要 beforeFields
-    if (expr.operator === 'changed') {
-      return operatorFn(fieldValue, expr.field, context.beforeFields)
     }
 
     const conditionValue = expr.value
