@@ -36,6 +36,7 @@ app.get('/', (c) => {
 })
 
 const LogsQuerySchema = z.object({
+  workflowId: z.string().uuid().optional().describe('按 workflow_id 过滤（建议用于 workflow-only 排障）'),
   ruleId: z.string().optional().describe('按规则 ID 过滤；workflow-only 模式下可为空'),
   status: z.enum(['success', 'failed', 'partial']).optional().describe('按执行状态过滤'),
   operatorOpenId: z.string().optional().describe('按操作人 Open ID 过滤'),
@@ -59,8 +60,17 @@ const ErrorEnvelopeSchema = z.object({
   details: z.unknown().optional().describe('错误细节'),
 })
 
+const LogResponseSchema = z.object({
+  workflowId: z.string().optional(),
+  source: z.string().optional(),
+  routedEventType: z.string().optional(),
+  business_status: z.enum(['matched', 'not_matched', 'skipped', 'unknown']).optional()
+    .describe('业务状态（status 仍表示技术执行状态）'),
+}).passthrough().nullable().describe('日志上下文：status=技术态，response.business_status=业务态')
+
 const LogRecordSchema = z.object({
   id: z.string(),
+  workflow_id: z.string().uuid().nullable(),
   rule_id: z.string().nullable(),
   rule_name: z.string().nullable(),
   trigger_action: z.string(),
@@ -70,7 +80,7 @@ const LogRecordSchema = z.object({
   status: z.string(),
   error_message: z.string().nullable(),
   duration_ms: z.number().nullable(),
-  response: z.unknown().nullable(),
+  response: LogResponseSchema,
   created_at: z.string(),
 })
 
@@ -137,7 +147,7 @@ app.openapi(
     path: '/api/logs',
     tags: ['Logs'],
     summary: '查询执行日志列表',
-    description: '按规则、状态、操作人和时间范围筛选执行日志，并支持分页。',
+    description: '按 workflow_id、规则、状态、操作人和时间范围筛选执行日志，并支持分页。status 为技术态，response.business_status 为业务态。',
     request: {
       query: LogsQuerySchema,
     },
@@ -172,6 +182,7 @@ app.openapi(
     try {
       const query = c.req.valid('query')
       const filter = {
+        workflowId: query.workflowId,
         ruleId: query.ruleId,
         status: query.status,
         operatorOpenId: query.operatorOpenId,
@@ -201,7 +212,7 @@ app.openapi(
     path: '/api/logs/{id}',
     tags: ['Logs'],
     summary: '查询执行日志详情',
-    description: '根据日志 ID 获取单条执行日志的完整信息。',
+    description: '根据日志 ID 获取单条执行日志的完整信息（status=技术态，response.business_status=业务态）。',
     request: {
       params: GetLogSchema,
     },
@@ -382,7 +393,9 @@ app.openapi(
   }) as any
 )
 
-startEventListener()
+if (process.env.DISABLE_EVENT_LISTENER !== 'true') {
+  startEventListener()
+}
 
 export default {
   port: 3333,

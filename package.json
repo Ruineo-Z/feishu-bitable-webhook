@@ -12,6 +12,8 @@
     "test:workflow:scope-migration": "npx tsx tests/workflow/scope-migration.test.ts",
     "test:workflow:branching": "npx tsx tests/workflow/branching-engine.test.ts",
     "test:workflow:dry-run": "npx tsx tests/workflow/dry-run-engine.test.ts",
+    "test:workflow:log-reliability": "npx tsx tests/workflow/execution-log-reliability.test.ts",
+    "test:workflow:logs-route": "npx tsx tests/workflow/logs-route-regression.test.ts",
     "test:workflow:webhook": "npx tsx tests/workflow/feishu-webhook-plugin.test.ts",
     "test:workflow:authoring": "npx tsx tests/workflow/authoring-loop.test.ts",
     "test:workflow:authoring-route": "npx tsx tests/workflow/authoring-route.test.ts"

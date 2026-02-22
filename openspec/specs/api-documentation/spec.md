@@ -5,7 +5,7 @@
 Define the expected behavior of API documentation endpoints so workflow scope filtering, branching DSL, and compatibility semantics are accurately exposed to developers.
 ## Requirements
 ### Requirement: OpenAPI Spec Endpoint
-The system MUST expose a `GET /doc` endpoint that reflects source-aware workflow DSL contracts, type-aware condition semantics, query/delete filter operator constraints, step guard, unresolved-template policy, and dry-run request-response schema.
+The system MUST expose a `GET /doc` endpoint that reflects source-aware workflow DSL contracts, type-aware condition semantics, query/delete filter operator constraints, step guard, unresolved-template policy, dry-run request-response schema, and execution-log query semantics.
 
 #### Scenario: Include source-aware condition schema
 - **WHEN** a client requests `GET /doc`
@@ -30,6 +30,14 @@ The system MUST expose a `GET /doc` endpoint that reflects source-aware workflow
 #### Scenario: Include dry-run error schema
 - **WHEN** a client requests `GET /doc`
 - **THEN** the returned OpenAPI specification MUST include structured error fields (`code`, `path`, `message`, `hint`) and dry-run summary fields
+
+#### Scenario: Include logs workflow filter schema
+- **WHEN** a client requests `GET /doc`
+- **THEN** the returned OpenAPI specification MUST include `GET /api/logs` query schema for workflow-level filtering (for example `workflowId`)
+
+#### Scenario: Include logs business status semantics
+- **WHEN** a client requests `GET /doc`
+- **THEN** the returned OpenAPI specification MUST describe technical status and business decision status fields in execution log payloads
 
 ### Requirement: Swagger UI
 The system MUST expose a `GET /docs` endpoint and MUST provide request examples for source-aware conditions, type-aware comparisons, filter operator usage, guarded action steps, and dry-run validation flow.
@@ -76,3 +84,4 @@ The system MUST provide meaningful summaries and descriptions for workflow endpo
 #### Scenario: Explain dry-run validation semantics
 - **WHEN** a user reads endpoint descriptions for workflow dry-run API
 - **THEN** documentation MUST describe that dry-run does not publish changes and only returns validation and effect previews
+

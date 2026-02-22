@@ -18,6 +18,7 @@ export interface ActionExecution {
  */
 export interface ExecutionLog {
   id: string
+  workflow_id: string | null
   rule_id: string | null
   rule_name: string | null
   trigger_action: string
@@ -40,6 +41,7 @@ export interface ExecutionLog {
  * 日志筛选条件
  */
 export interface LogFilter {
+  workflowId?: string
   ruleId?: string
   status?: 'success' | 'failed' | 'partial'
   operatorOpenId?: string
@@ -98,6 +100,9 @@ export const executionLogsDb = {
     if (filter.ruleId) {
       query = query.eq('rule_id', filter.ruleId)
     }
+    if (filter.workflowId) {
+      query = query.eq('workflow_id', filter.workflowId)
+    }
     if (filter.status) {
       query = query.eq('status', filter.status)
     }
@@ -130,6 +135,9 @@ export const executionLogsDb = {
 
     if (filter.ruleId) {
       query = query.eq('rule_id', filter.ruleId)
+    }
+    if (filter.workflowId) {
+      query = query.eq('workflow_id', filter.workflowId)
     }
     if (filter.status) {
       query = query.eq('status', filter.status)

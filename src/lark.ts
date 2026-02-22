@@ -28,39 +28,418 @@ const PROCESSED_EVENTS_TTL = 60 * 60 * 1000
 const eventTimestamps = new Map<string, number>()
 const processingEventTimestamps = new Map<string, number>()
 
-const logQueue: ExecutionLog[] = []
-const LOG_QUEUE_MAX_SIZE = 1000
-const LOG_FLUSH_INTERVAL = 5000
+type ExecutionLogInsert = Omit<ExecutionLog, 'id' | 'created_at'>
+type WorkflowBusinessStatus = 'matched' | 'not_matched' | 'skipped' | 'unknown'
 
-async function flushExecutionLogs(): Promise<void> {
-  if (logQueue.length === 0) return
+type PendingExecutionLog = {
+  payload: ExecutionLogInsert
+  retryCount: number
+  enqueuedAt: number
+}
 
-  const logs = logQueue.splice(0, logQueue.length)
+type FlushExecutionLogOptions = {
+  reason?: string
+  force?: boolean
+}
+
+type FlushExecutionLogResult = {
+  attempted: boolean
+  success: boolean
+  reason: string
+  syncedCount: number
+  requeuedCount: number
+  droppedCount: number
+  remainingQueueSize: number
+  retryAfterMs: number | null
+  errorMessage?: string
+}
+
+type DrainExecutionLogResult = {
+  timedOut: boolean
+  drainedCount: number
+  attempts: number
+  remainingQueueSize: number
+  durationMs: number
+}
+
+type ExecutionLogWriter = (logs: ExecutionLogInsert[]) => Promise<void>
+
+const logQueue: PendingExecutionLog[] = []
+const LOG_QUEUE_MAX_SIZE = Math.max(Number(process.env.LOG_QUEUE_MAX_SIZE || 1000), 1)
+const LOG_FLUSH_INTERVAL = Math.max(Number(process.env.LOG_FLUSH_INTERVAL_MS || 5000), 500)
+const LOG_FLUSH_MAX_RETRIES = Math.max(Number(process.env.LOG_FLUSH_MAX_RETRIES || 5), 0)
+const LOG_FLUSH_BACKOFF_BASE_MS = Math.max(Number(process.env.LOG_FLUSH_BACKOFF_BASE_MS || 500), 100)
+const LOG_FLUSH_BACKOFF_MAX_MS = Math.max(Number(process.env.LOG_FLUSH_BACKOFF_MAX_MS || 30000), LOG_FLUSH_BACKOFF_BASE_MS)
+const LOG_DRAIN_TIMEOUT_MS = Math.max(Number(process.env.LOG_DRAIN_TIMEOUT_MS || 5000), 500)
+const LOG_DRAIN_RETRY_INTERVAL_MS = Math.max(Number(process.env.LOG_DRAIN_RETRY_INTERVAL_MS || 300), 50)
+
+let isExecutionLogFlushInProgress = false
+let nextFlushRetryAt = 0
+let retryFlushTimer: ReturnType<typeof setTimeout> | null = null
+let hasRegisteredDrainHooks = false
+let isShutdownDraining = false
+
+const defaultExecutionLogWriter: ExecutionLogWriter = async (logs) => {
+  const { error } = await getSupabase()
+    .from('execution_logs')
+    .insert(logs)
+
+  if (error) {
+    throw error
+  }
+}
+
+let executionLogWriter: ExecutionLogWriter = defaultExecutionLogWriter
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+function getRetryDelayMs(retryCount: number): number {
+  const exponential = LOG_FLUSH_BACKOFF_BASE_MS * (2 ** Math.max(retryCount - 1, 0))
+  return Math.min(exponential, LOG_FLUSH_BACKOFF_MAX_MS)
+}
+
+function unwrapErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message || error.name
+  }
+
+  return String(error)
+}
+
+function getLogQueueDiagnostics() {
+  const now = Date.now()
+  const oldest = logQueue[0]
+  const newest = logQueue[logQueue.length - 1]
+
+  return {
+    size: logQueue.length,
+    maxSize: LOG_QUEUE_MAX_SIZE,
+    oldestAgeMs: oldest ? now - oldest.enqueuedAt : 0,
+    newestAgeMs: newest ? now - newest.enqueuedAt : 0,
+  }
+}
+
+function enforceLogQueueLimit(log: ReturnType<typeof createFeishuLogger>, reason: 'enqueue' | 'requeue'): number {
+  if (logQueue.length <= LOG_QUEUE_MAX_SIZE) {
+    return 0
+  }
+
+  const overflow = logQueue.length - LOG_QUEUE_MAX_SIZE
+  const dropped = logQueue.splice(0, overflow)
+  const droppedSample = dropped[0]?.payload
+
+  log.warn('执行日志队列达到上限，已按策略丢弃最旧日志', {
+    reason,
+    overflow,
+    droppedCount: dropped.length,
+    queueDiagnostics: getLogQueueDiagnostics(),
+    droppedSample: droppedSample
+      ? {
+        workflow_id: droppedSample.workflow_id || null,
+        rule_name: droppedSample.rule_name || null,
+        record_id: droppedSample.record_id,
+        trigger_action: droppedSample.trigger_action,
+      }
+      : null,
+  })
+
+  return dropped.length
+}
+
+function scheduleRetryFlush(delayMs: number): void {
+  if (retryFlushTimer) {
+    clearTimeout(retryFlushTimer)
+  }
+
+  retryFlushTimer = setTimeout(() => {
+    retryFlushTimer = null
+    void flushExecutionLogs({
+      reason: 'retry',
+    })
+  }, delayMs)
+
+  const timerHandle = retryFlushTimer as unknown as { unref?: () => void }
+  if (typeof timerHandle.unref === 'function') {
+    timerHandle.unref()
+  }
+}
+
+async function flushExecutionLogs(options: FlushExecutionLogOptions = {}): Promise<FlushExecutionLogResult> {
+  const reason = options.reason || 'interval'
+
+  if (logQueue.length === 0) {
+    return {
+      attempted: false,
+      success: true,
+      reason,
+      syncedCount: 0,
+      requeuedCount: 0,
+      droppedCount: 0,
+      remainingQueueSize: 0,
+      retryAfterMs: null,
+    }
+  }
+
+  if (isExecutionLogFlushInProgress) {
+    return {
+      attempted: false,
+      success: false,
+      reason,
+      syncedCount: 0,
+      requeuedCount: 0,
+      droppedCount: 0,
+      remainingQueueSize: logQueue.length,
+      retryAfterMs: null,
+      errorMessage: 'flush_in_progress',
+    }
+  }
+
+  if (!options.force && Date.now() < nextFlushRetryAt) {
+    return {
+      attempted: false,
+      success: false,
+      reason,
+      syncedCount: 0,
+      requeuedCount: 0,
+      droppedCount: 0,
+      remainingQueueSize: logQueue.length,
+      retryAfterMs: nextFlushRetryAt - Date.now(),
+      errorMessage: 'retry_window_not_reached',
+    }
+  }
+
+  isExecutionLogFlushInProgress = true
+
+  const batch = logQueue.splice(0, logQueue.length)
   const log = createFeishuLogger('LOG')
+  const currentRetryCount = batch.reduce((max, item) => Math.max(max, item.retryCount), 0)
 
   try {
-    const { error } = await getSupabase()
-      .from('execution_logs')
-      .insert(logs)
+    await executionLogWriter(batch.map((item) => item.payload))
+    nextFlushRetryAt = 0
 
-    if (error) {
-      log.error('批量写入执行日志失败:', error)
+    return {
+      attempted: true,
+      success: true,
+      reason,
+      syncedCount: batch.length,
+      requeuedCount: 0,
+      droppedCount: 0,
+      remainingQueueSize: logQueue.length,
+      retryAfterMs: null,
     }
   } catch (error) {
-    log.error('批量写入执行日志异常:', error)
+    const errorMessage = unwrapErrorMessage(error)
+    const nextRetryCount = currentRetryCount + 1
+
+    if (nextRetryCount > LOG_FLUSH_MAX_RETRIES) {
+      nextFlushRetryAt = 0
+      log.error('执行日志批量写入重试超限，丢弃当前批次', {
+        reason,
+        retryCount: nextRetryCount,
+        maxRetries: LOG_FLUSH_MAX_RETRIES,
+        batchSize: batch.length,
+        queueDiagnostics: getLogQueueDiagnostics(),
+        error: errorMessage,
+      })
+
+      return {
+        attempted: true,
+        success: false,
+        reason,
+        syncedCount: 0,
+        requeuedCount: 0,
+        droppedCount: batch.length,
+        remainingQueueSize: logQueue.length,
+        retryAfterMs: null,
+        errorMessage,
+      }
+    }
+
+    const requeuedBatch = batch.map((item) => ({
+      ...item,
+      retryCount: item.retryCount + 1,
+    }))
+
+    logQueue.unshift(...requeuedBatch)
+    const droppedByQueueLimit = enforceLogQueueLimit(log, 'requeue')
+    const retryAfterMs = getRetryDelayMs(nextRetryCount)
+    nextFlushRetryAt = Date.now() + retryAfterMs
+
+    if (!options.force) {
+      scheduleRetryFlush(retryAfterMs)
+    }
+
+    log.warn('执行日志批量写入失败，已回队并等待退避重试', {
+      reason,
+      retryCount: nextRetryCount,
+      retryAfterMs,
+      batchSize: batch.length,
+      droppedByQueueLimit,
+      queueDiagnostics: getLogQueueDiagnostics(),
+      error: errorMessage,
+    })
+
+    return {
+      attempted: true,
+      success: false,
+      reason,
+      syncedCount: 0,
+      requeuedCount: Math.max(requeuedBatch.length - droppedByQueueLimit, 0),
+      droppedCount: droppedByQueueLimit,
+      remainingQueueSize: logQueue.length,
+      retryAfterMs,
+      errorMessage,
+    }
+  } finally {
+    isExecutionLogFlushInProgress = false
   }
 }
 
-function queueExecutionLog(executionLog: Omit<ExecutionLog, 'id' | 'created_at'>): void {
-  if (logQueue.length >= LOG_QUEUE_MAX_SIZE) {
-    logQueue.shift()
+async function drainExecutionLogs(reason: string, timeoutMs = LOG_DRAIN_TIMEOUT_MS): Promise<DrainExecutionLogResult> {
+  const log = createFeishuLogger('LOG')
+  const startedAt = Date.now()
+  let drainedCount = 0
+  let attempts = 0
+
+  while (logQueue.length > 0) {
+    const elapsed = Date.now() - startedAt
+    if (elapsed >= timeoutMs) {
+      log.warn('执行日志 drain 超时，停止继续冲刷', {
+        reason,
+        timeoutMs,
+        attempts,
+        drainedCount,
+        queueDiagnostics: getLogQueueDiagnostics(),
+      })
+
+      return {
+        timedOut: true,
+        drainedCount,
+        attempts,
+        remainingQueueSize: logQueue.length,
+        durationMs: elapsed,
+      }
+    }
+
+    attempts += 1
+    const flushResult = await flushExecutionLogs({
+      reason: `drain:${reason}`,
+      force: true,
+    })
+
+    drainedCount += flushResult.syncedCount
+
+    if (flushResult.success) {
+      continue
+    }
+
+    const remainingBudgetMs = timeoutMs - (Date.now() - startedAt)
+    if (remainingBudgetMs <= 0) {
+      continue
+    }
+
+    const waitMs = Math.min(
+      flushResult.retryAfterMs || LOG_DRAIN_RETRY_INTERVAL_MS,
+      remainingBudgetMs,
+    )
+    await sleep(waitMs)
   }
-  logQueue.push(executionLog as ExecutionLog)
+
+  return {
+    timedOut: false,
+    drainedCount,
+    attempts,
+    remainingQueueSize: 0,
+    durationMs: Date.now() - startedAt,
+  }
 }
 
-setInterval(flushExecutionLogs, LOG_FLUSH_INTERVAL)
+async function handleShutdownDrain(signal: 'SIGINT' | 'SIGTERM'): Promise<void> {
+  if (isShutdownDraining) {
+    return
+  }
+  isShutdownDraining = true
 
-function logExecution(executionLog: Omit<ExecutionLog, 'id' | 'created_at'>): void {
+  const log = createFeishuLogger('LOG')
+  log.warn('收到退出信号，开始冲刷执行日志', {
+    signal,
+    queueDiagnostics: getLogQueueDiagnostics(),
+    drainTimeoutMs: LOG_DRAIN_TIMEOUT_MS,
+  })
+
+  try {
+    const result = await drainExecutionLogs(signal, LOG_DRAIN_TIMEOUT_MS)
+    if (result.timedOut) {
+      log.warn('退出前执行日志冲刷超时', {
+        signal,
+        ...result,
+      })
+    } else {
+      log.info('退出前执行日志冲刷完成', {
+        signal,
+        ...result,
+      })
+    }
+  } catch (error) {
+    log.error('退出前执行日志冲刷异常', {
+      signal,
+      error: unwrapErrorMessage(error),
+    })
+  } finally {
+    process.exit(0)
+  }
+}
+
+function registerExecutionLogDrainHandlers(): void {
+  if (hasRegisteredDrainHooks) {
+    return
+  }
+
+  hasRegisteredDrainHooks = true
+  const log = createFeishuLogger('LOG')
+
+  process.once('SIGINT', () => {
+    void handleShutdownDrain('SIGINT')
+  })
+  process.once('SIGTERM', () => {
+    void handleShutdownDrain('SIGTERM')
+  })
+  process.once('beforeExit', () => {
+    void drainExecutionLogs('beforeExit', LOG_DRAIN_TIMEOUT_MS).catch((error) => {
+      log.error('beforeExit 执行日志冲刷失败', {
+        error: unwrapErrorMessage(error),
+      })
+    })
+  })
+}
+
+const flushInterval = setInterval(() => {
+  void flushExecutionLogs({
+    reason: 'interval',
+  })
+}, LOG_FLUSH_INTERVAL)
+
+const flushIntervalHandle = flushInterval as unknown as { unref?: () => void }
+if (typeof flushIntervalHandle.unref === 'function') {
+  flushIntervalHandle.unref()
+}
+
+function queueExecutionLog(executionLog: ExecutionLogInsert): void {
+  const log = createFeishuLogger('LOG')
+  logQueue.push({
+    payload: executionLog,
+    retryCount: 0,
+    enqueuedAt: Date.now(),
+  })
+  enforceLogQueueLimit(log, 'enqueue')
+}
+
+function logExecution(executionLog: ExecutionLogInsert): void {
   queueExecutionLog(executionLog)
 }
 
@@ -207,6 +586,93 @@ function summarizeWorkflowResult(steps: Record<string, { success: boolean; error
     status: 'success' as const,
     errorMessage: null,
   }
+}
+
+function summarizeWorkflowBusinessStatus(
+  steps: Record<string, { success: boolean; skipped?: boolean; output?: unknown }>,
+): WorkflowBusinessStatus {
+  const stepResults = Object.values(steps || {})
+  if (stepResults.length === 0) {
+    return 'unknown'
+  }
+
+  if (stepResults.some((step) => step.skipped)) {
+    return 'skipped'
+  }
+
+  const hasConditionNotMatched = stepResults.some((step) => {
+    const output = step.output as Record<string, unknown> | undefined
+    const data = output?.data as Record<string, unknown> | undefined
+    return data?.pass === false
+  })
+
+  if (hasConditionNotMatched) {
+    return 'not_matched'
+  }
+
+  if (stepResults.every((step) => step.success)) {
+    return 'matched'
+  }
+
+  return 'unknown'
+}
+
+function summarizeExecutionError(error: unknown): { name: string; message: string; stack?: string } {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message || 'unknown_error',
+      stack: error.stack,
+    }
+  }
+
+  return {
+    name: 'UnknownError',
+    message: String(error),
+  }
+}
+
+function queueRejectedWorkflowExecutionLog(params: {
+  workflowId: string
+  workflowName: string
+  source: string
+  triggerAction: string
+  recordId: string
+  operatorOpenId: string | null
+  fieldsAfter: Record<string, unknown>
+  fieldsBefore: Record<string, unknown>
+  routedEventType: WorkflowEventType
+  traceId: string
+  error: unknown
+}) {
+  const errorSummary = summarizeExecutionError(params.error)
+
+  logExecution({
+    workflow_id: params.workflowId,
+    rule_id: null,
+    rule_name: `workflow:${params.workflowName}`,
+    trigger_action: params.triggerAction,
+    record_id: params.recordId,
+    operator_openid: params.operatorOpenId,
+    record_snapshot: {
+      fields: params.fieldsAfter,
+      beforeFields: params.fieldsBefore,
+    },
+    status: 'failed',
+    error_message: errorSummary.message,
+    duration_ms: null,
+    response: {
+      workflowId: params.workflowId,
+      source: params.source,
+      routedEventType: params.routedEventType,
+      business_status: 'unknown' as const,
+      traceId: params.traceId,
+      trigger_action: params.triggerAction,
+      error: errorSummary,
+    },
+  })
+
+  return errorSummary
 }
 
 function summarizeStepStats(steps: Record<string, { success: boolean; skipped?: boolean }>) {
@@ -629,8 +1095,10 @@ async function processEvent(rawEvent: unknown, version: string) {
             const workflowContext = await workflowEngine.execute(workflow.config, triggerContext)
             const summary = summarizeWorkflowResult(workflowContext.steps as Record<string, { success: boolean; error?: string; output?: unknown }>)
             const stepStats = summarizeStepStats(workflowContext.steps as Record<string, { success: boolean; skipped?: boolean }>)
+            const businessStatus = summarizeWorkflowBusinessStatus(workflowContext.steps as Record<string, { success: boolean; skipped?: boolean; output?: unknown }>)
 
             logExecution({
+              workflow_id: workflow.id,
               rule_id: null,
               rule_name: `workflow:${workflow.name}`,
               trigger_action: triggerAction,
@@ -647,6 +1115,7 @@ async function processEvent(rawEvent: unknown, version: string) {
                 workflowId: workflow.id,
                 source,
                 routedEventType: normalizedEventType,
+                business_status: businessStatus,
                 steps: workflowContext.steps,
               },
             })
@@ -657,6 +1126,7 @@ async function processEvent(rawEvent: unknown, version: string) {
               source,
               status: summary.status,
               error: summary.errorMessage,
+              businessStatus,
               stepStats,
             }
           }),
@@ -669,6 +1139,7 @@ async function processEvent(rawEvent: unknown, version: string) {
             source: string
             status: 'success' | 'failed'
             error: string | null
+            businessStatus: WorkflowBusinessStatus
             stepStats: {
               total: number
               success: number
@@ -703,9 +1174,41 @@ async function processEvent(rawEvent: unknown, version: string) {
           },
         )
 
-        const failedExecutions = executionResults.filter((item) => item.status === 'rejected')
+        const failedExecutions = executionResults
+          .map((item, index) => ({
+            item,
+            candidate: executableWorkflows[index],
+          }))
+          .filter((entry): entry is {
+            item: PromiseRejectedResult
+            candidate: (typeof executableWorkflows)[number]
+          } => entry.item.status === 'rejected')
+
         if (failedExecutions.length > 0) {
-          log.error(`工作流执行阶段发生 ${failedExecutions.length} 个异常`, failedExecutions)
+          const exceptionSummaries = failedExecutions.map((entry) => {
+            const errorSummary = queueRejectedWorkflowExecutionLog({
+              workflowId: entry.candidate.workflow.id,
+              workflowName: entry.candidate.workflow.name,
+              source: entry.candidate.source,
+              triggerAction,
+              recordId,
+              operatorOpenId: operatorOpenId || null,
+              fieldsAfter: mappedAfter.mappedFields,
+              fieldsBefore: mappedBefore.mappedFields,
+              routedEventType: normalizedEventType,
+              traceId,
+              error: entry.item.reason,
+            })
+
+            return {
+              workflowId: entry.candidate.workflow.id,
+              workflowName: entry.candidate.workflow.name,
+              source: entry.candidate.source,
+              error: errorSummary,
+            }
+          })
+
+          log.error(`工作流执行阶段发生 ${failedExecutions.length} 个异常`, exceptionSummaries)
         }
 
         log.info('工作流执行摘要', {
@@ -812,6 +1315,7 @@ export const startEventListener = async () => {
 
   try {
     log.info('workflow-only 模式已启用')
+    registerExecutionLogDrainHandlers()
 
     log.info('正在启动长连接...')
 
@@ -840,4 +1344,27 @@ export const startEventListener = async () => {
     log.error('启动事件监听失败:', error)
     throw error
   }
+}
+
+export const __testing = {
+  queueExecutionLog,
+  flushExecutionLogs,
+  drainExecutionLogs,
+  summarizeWorkflowBusinessStatus,
+  queueRejectedWorkflowExecutionLog,
+  setExecutionLogWriter(writer: ExecutionLogWriter | null) {
+    executionLogWriter = writer || defaultExecutionLogWriter
+  },
+  resetExecutionLogQueue() {
+    logQueue.splice(0, logQueue.length)
+    nextFlushRetryAt = 0
+    if (retryFlushTimer) {
+      clearTimeout(retryFlushTimer)
+      retryFlushTimer = null
+    }
+    isExecutionLogFlushInProgress = false
+    isShutdownDraining = false
+  },
+  getLogQueueDiagnostics,
+  registerExecutionLogDrainHandlers,
 }
